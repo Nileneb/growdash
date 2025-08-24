@@ -1,0 +1,7 @@
+fastapi 
+uvicorn 
+httpx 
+pyserial 
+opencv-python 
+apscheduler
+websockets
