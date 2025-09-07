@@ -1,0 +1,347 @@
+<!doctype html><html lang="de"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Grow Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="/static/vendor/fullcalendar/main.min.css">
+<!-- FullCalendar CSS (DayGrid/TimeGrid) -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fullcalendar/daygrid@6.1.19/index.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fullcalendar/timegrid@6.1.19/index.css">
+<style>
+  body{background:#0b1220;color:#e2e8f0}
+  .card{background:#0f172a;border-radius:1rem;padding:1rem;box-shadow:0 0 0 1px rgba(148,163,184,.08) inset}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
+  .btn{padding:.5rem .8rem;border-radius:.75rem;background:#1e293b}
+  .btn:hover{background:#334155}
+  .btn-ok{background:#16a34a}.btn-ok:hover{background:#22c55e}
+  .btn-bad{background:#dc2626}.btn-bad:hover{background:#ef4444}
+  .btn-act{background:#2563eb}.btn-act:hover{background:#3b82f6}
+  .tank{width:110px;height:220px;border:2px solid #334155;border-radius:12px;position:relative;background:#0a1020}
+  .tank .fill{position:absolute;bottom:0;left:0;width:100%;background:#22d3ee;border-radius:10px}
+  input,select{color:#111}
+</style>
+</head><body>
+<div class="max-w-[1400px] mx-auto p-4">
+  <div class="flex items-center justify-between mb-3">
+    <div class="text-xl font-semibold">Grow Dashboard</div>
+    <div id="port" class="text-xs opacity-70">Port: …</div>
+  </div>
+
+  <!-- Layout: 12 Spalten -->
+  <div class="grid grid-cols-12 gap-4">
+
+    <!-- Gruppe 1: Füllstand & Nachfüllen -->
+    <div class="card col-span-4">
+      <div class="font-semibold mb-2">Füllstand & Nachfüllen</div>
+      <div class="flex items-center gap-5">
+        <div class="tank"><div id="tankFill" class="fill" style="height:0%"></div></div>
+        <div>
+          <div class="text-3xl font-bold"><span id="liters">0.0</span> L</div>
+          <div class="text-xs opacity-70">Abstand <span id="dist">–</span> cm</div>
+          <div class="text-xs opacity-70"><span id="flags">Spray OFF · Tab OFF · LvlSw HIGH · LvlRel OFF</span></div>
+        </div>
+      </div>
+      <div class="mt-4 flex items-center gap-2">
+        <input id="fillL" type="number" step="0.1" min="0.1" value="2.0" class="w-20 rounded-md px-2 py-1">
+        <button id="btnFill" class="btn btn-ok">Füllen</button>
+        <button id="btnFillCancel" class="btn btn-bad">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Gruppe 2: Gießen & TDS -->
+    <div class="card col-span-4">
+      <div class="font-semibold mb-2">Gießen & TDS</div>
+      <div class="flex items-center gap-2 mb-2">
+        <button id="btnSprayOn" class="btn btn-ok">Spray ON</button>
+        <button id="btnSprayOff" class="btn btn-bad">OFF</button>
+        <input id="sprayMs" type="number" min="10" value="800" class="w-24 rounded-md px-2 py-1">
+        <button id="btnSprayPulse" class="btn btn-act">Pulse</button>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="btnTDS" class="btn">TDS/Temp</button>
+        <div class="text-sm opacity-90">TDS <span id="tds">–</span> ppm · Temp <span id="temp">–</span> °C</div>
+      </div>
+    </div>
+
+    <!-- Kamera (kleiner) -->
+    <div class="card col-span-4">
+      <div class="flex items-center justify-between">
+        <div class="font-semibold">Kamera</div>
+        <a class="text-xs underline" href="/snapshot.jpg" target="_blank">Snapshot</a>
+      </div>
+      <img id="cam" class="mt-2 rounded-lg mx-auto" style="width: 360px; height: 240px; object-fit: cover;" alt="camera">
+    </div>
+
+    <!-- Geräte (Shelly) -->
+    <div class="card col-span-5">
+      <div class="flex items-center justify-between mb-2">
+        <div class="font-semibold">Geräte (Shelly)</div>
+        <button id="btnDevRefresh" class="btn btn-act text-sm">Refresh</button>
+      </div>
+      <div class="grid grid-cols-6 gap-2 items-center mb-2">
+        <input id="d_name" placeholder="Name" class="px-2 py-1 rounded-md col-span-2">
+        <input id="d_ip" placeholder="192.168.178.x" class="px-2 py-1 rounded-md col-span-2">
+        <select id="d_gen" class="px-2 py-1 rounded-md col-span-1"><option value="2">Gen2</option><option value="1">Gen1</option></select>
+        <input id="d_ch" type="number" min="0" value="0" class="px-2 py-1 rounded-md col-span-1">
+        <button id="btnDevAdd" class="btn btn-ok col-span-1">Add</button>
+      </div>
+      <div id="devList" class="space-y-2 text-sm"></div>
+    </div>
+
+    <!-- Kalender (groß) -->
+    <div class="card col-span-7">
+      <div class="flex items-center gap-2 mb-2">
+        <input id="calName" placeholder="Name/Notiz" class="px-2 py-1 rounded-md">
+        <select id="calAction" class="px-2 py-1 rounded-md">
+          <option value="spray">spray(ms)</option>
+          <option value="fill">fill(L)</option>
+          <option value="shelly">shelly(toggle)</option>
+          <option value="serial">serial(cmd)</option>
+          <option value="photo">photo</option>
+        </select>
+        <input id="calVal" placeholder="800 | 2.0 | <id> | cmd" class="px-2 py-1 rounded-md w-64">
+        <span class="text-xs opacity-60">= Aktion für neue Einträge</span>
+      </div>
+      <div id="calendar" class="rounded-lg overflow-hidden"></div>
+    </div>
+
+    <!-- Log (breit) -->
+    <div class="card col-span-12">
+      <div class="flex items-center justify-between">
+        <div class="font-semibold">Log</div>
+        <button id="btnLogClear" class="btn text-sm">Clear</button>
+      </div>
+      <pre id="log" class="mono mt-2 text-[12px]" style="height:220px;overflow:auto;white-space:pre-wrap;"></pre>
+    </div>
+  </div>
+</div>
+
+<!-- Import-Map für ESM -->
+<script type="importmap">
+{
+  "imports": {
+    "@fullcalendar/core": "https://cdn.jsdelivr.net/npm/@fullcalendar/core@6.1.19/index.js",
+    "@fullcalendar/interaction": "https://cdn.jsdelivr.net/npm/@fullcalendar/interaction@6.1.19/index.js",
+    "@fullcalendar/daygrid": "https://cdn.jsdelivr.net/npm/@fullcalendar/daygrid@6.1.19/index.js",
+    "@fullcalendar/timegrid": "https://cdn.jsdelivr.net/npm/@fullcalendar/timegrid@6.1.19/index.js"
+  }
+}
+</script>
+
+<script type="module">
+  import { Calendar } from "@fullcalendar/core";
+  import interactionPlugin from "@fullcalendar/interaction";
+  import dayGridPlugin from "@fullcalendar/daygrid";
+  import timeGridPlugin from "@fullcalendar/timegrid";
+
+  async function api(p, opts={}) {
+    const r = await fetch(p, { headers:{'Content-Type':'application/json'}, ...opts });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  }
+
+  async function initCalendar(){
+    const root = document.getElementById('calendar');
+    const cal  = new Calendar(root, {
+      height: 520,
+      initialView: 'timeGridWeek',
+      nowIndicator: true,
+      selectable: true,
+      editable: true,
+      headerToolbar: { left:'prev,next today', center:'title', right:'dayGridMonth,timeGridWeek,timeGridDay' },
+      plugins: [interactionPlugin, dayGridPlugin, timeGridPlugin],
+
+      select: async (info) => {
+        const title = document.getElementById('calName').value || 'event';
+        const type  = document.getElementById('calAction').value;
+        const val   = (document.getElementById('calVal').value || '').trim();
+
+        // -> Backend erwartet action als Objekt (nicht String)
+        let action = {};
+        if (type === 'spray')   action = { type:'spray',  ms: parseInt(val||'800',10) };
+        else if (type === 'fill')   action = { type:'fill',   liters: parseFloat(val||'2') };
+        else if (type === 'shelly') action = { type:'shelly', id: val || '', cmd:'toggle' };
+        else if (type === 'serial') action = { type:'serial', cmd: val || 'Status' };
+        else if (type === 'photo')  action = { type:'photo' };
+
+        await api('/api/cal/events', {
+          method:'POST',
+          body: JSON.stringify({ title, start: info.startStr, action })
+        });
+
+        cal.addEvent({ title, start: info.start, end: new Date(info.start.getTime()+30*60000) });
+      },
+
+      eventDrop: async (info) => {
+        await api(`/api/cal/events/${info.event.id}`, {
+          method:'PUT',
+          body: JSON.stringify({ start: info.event.start.toISOString() })
+        });
+      },
+      eventResize: async (info) => {
+        await api(`/api/cal/events/${info.event.id}`, {
+          method:'PUT',
+          body: JSON.stringify({ start: info.event.start.toISOString() })
+        });
+      }
+    });
+
+    // Bestehende Events darstellen (einfach: title/start verwenden)
+    try {
+      const evs = await api('/api/cal/events');
+      evs.forEach(e => {
+        try { cal.addEvent({ id: e.id, title: e.title, start: new Date(e.start) }); } catch {}
+      });
+    } catch {}
+    cal.render();
+  }
+
+  // Falls du schon eine init()-Funktion hast: dort einfach initCalendar() aufrufen.
+  window.initCalendar = initCalendar;
+  // optional: sofort starten
+  document.addEventListener('DOMContentLoaded', initCalendar);
+</script>
+<script>
+const H={"Content-Type":"application/json"};
+const fmt=n=>(n==null||isNaN(n))?"–":(+n).toFixed(1);
+
+function setTank(l){const max=document.getElementById('maxL')?.value||47;const v=isNaN(+l)?0:Math.max(0,Math.min(max,+l));document.getElementById('tankFill').style.height=(v/max*100)+'%';document.getElementById('liters').textContent=fmt(v);}
+function applyStatus(s){
+  setTank(s.liters); document.getElementById('dist').textContent=fmt(s.dist_cm);
+  const flags=`Spray ${s.Spray||'OFF'} · Tab ${s.Tab||'OFF'} · LvlSw ${s.LvlSw||'HIGH'} · LvlRel ${s.LvlRel||'OFF'}`;
+  document.getElementById('flags').textContent=flags;
+}
+function appendLog(t){const e=document.getElementById('log');const at=(e.scrollTop+e.clientHeight+4)>=e.scrollHeight;e.textContent+=(e.textContent?"\n":"")+t;if(e.textContent.length>80000)e.textContent=e.textContent.slice(-80000);if(at)e.scrollTop=e.scrollHeight;
+  // TDS/Temp rausziehen
+  const m=t.match(/^TDS=(\d+)\s+TempC=([0-9.]+|NaN)/); 
+  if(m){document.getElementById('tds').textContent=m[1]; document.getElementById('temp').textContent=m[2];}
+}
+async function api(p,opts={}){const r=await fetch(p,{headers:H,...opts});if(!r.ok)throw new Error(await r.text());return r.json();}
+
+async function refreshDevs(){let list=[];try{list=await api('/api/dev/status')}catch(_){list=await api('/api/dev')}
+  const root=document.getElementById('devList');
+  root.innerHTML=list.map(d=>`<div class="flex items-center gap-2">
+    <div class="w-32">${d.name}</div><div class="w-28 opacity-70 text-xs">${d.ip}</div>
+    <div class="w-10">${(d.on||d.ison)?'ON':(d.error?'ERR':'OFF')}</div>
+    <button class="btn btn-ok text-xs" data-id="${d.id}" data-a="on">On</button>
+    <button class="btn btn-bad text-xs" data-id="${d.id}" data-a="off">Off</button>
+    <button class="btn btn-act text-xs" data-id="${d.id}" data-a="toggle">Toggle</button>
+    <button class="btn text-xs" data-id="${d.id}" data-a="del">Del</button>
+  </div>`).join('');
+  root.querySelectorAll('button').forEach(b=>b.onclick=async()=>{
+    const id=b.dataset.id,a=b.dataset.a;
+    if(a==='del'){await api(`/api/dev/${id}`,{method:'DELETE'})} 
+    else {await api(`/api/dev/${id}/action`,{method:'POST',body:JSON.stringify({cmd:a})})}
+    refreshDevs();
+  });
+}
+
+function connectWS(){
+  const proto=location.protocol==='https:'?'wss':'ws';
+  const ws=new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen=()=>appendLog('[ws] connected');
+  ws.onclose=()=>{appendLog('[ws] closed'); setTimeout(connectWS,1200);};
+  ws.onerror=()=>appendLog('[ws] error');
+  ws.onmessage=e=>{
+    try{const m=JSON.parse(e.data);
+      if(m.type==='status')applyStatus(m.data);
+      else if(m.type==='log')appendLog(m.data);
+      else if(m.type==='photo'){/* ignore */}
+    }catch(_){}
+  };
+}
+
+// Kamera: MJPEG mit Snapshot-Fallback
+function startCamera(){
+  const img = document.getElementById('cam');
+  let usingSnap = false;
+  let snapTimer = null;
+
+  function startsnapshot(){
+    if (usingSnap) return;
+    usingSnap = true;
+    const tick = ()=>{
+      img.src = '/snapshot.jpg?r=' + Date.now();
+      snapTimer = setTimeout(tick, 3000); // alle 3s
+    };
+    tick();
+  }
+
+  function startMjpeg(){
+    usingSnap = false;
+    if (snapTimer) { clearTimeout(snapTimer); snapTimer = null; }
+    img.onerror = startsnapshot;
+    img.src = '/video.mjpg?r=' + Date.now();
+  }
+
+  // Stream zuerst probieren; Klick auf das Bild versucht jederzeit wieder MJPEG
+  startMjpeg();
+  img.addEventListener('click', startMjpeg);
+}
+
+async function initCalendar(){
+  const root=document.getElementById('calendar');
+  const cal=new FullCalendar.Calendar(root,{
+    height:520, initialView:'timeGridWeek', nowIndicator:true, selectable:true, editable:true,
+    validRange: { start: new Date() },
+    headerToolbar:{ left:'prev,next today', center:'title', right:'dayGridMonth,timeGridWeek,timeGridDay' },
+    select: async (info) => {
+      const title = document.getElementById('calName').value || 'event';
+      const type  = document.getElementById('calAction').value;
+      const val   = (document.getElementById('calVal').value || '').trim();
+
+      let action = { type };
+      if (type === 'spray')  action.ms     = parseInt(val||'800',10);
+      if (type === 'fill')   action.liters = parseFloat(val||'2');
+      if (type === 'serial') action.cmd    = val || 'Status';
+      if (type === 'shelly') action.id     = val, action.cmd = 'toggle';
+      // type === 'photo' hat keine weiteren Felder
+
+      await api('/api/cal/events', {
+        method:'POST',
+        body: JSON.stringify({ title, start: info.start.toISOString(), action })
+      });
+
+      cal.addEvent({ title, start: info.start, end: new Date(info.start.getTime()+30*60000) });
+    }
+  });
+  // bestehende ONCE-Events als Anzeige (vereinfachte Darstellung)
+  try{
+    const evs=await api('/api/cal/events');
+    evs.filter(e=>e.trigger?.type==='once').forEach(e=>{
+      try{ cal.addEvent({title:e.name,start:new Date(e.trigger.at)}) }catch(_){}
+    });
+  }catch(_){}
+  cal.render();
+}
+
+async function init(){
+  connectWS(); startCamera(); initCalendar(); refreshDevs();
+  try{const p=await api('/api/ports'); document.getElementById('port').textContent=`Port: ${p.current||'—'}`}catch(_){}
+
+  // Geräte Add
+  document.getElementById('btnDevRefresh').onclick=refreshDevs;
+  document.getElementById('btnDevAdd').onclick=async()=>{
+    const name=d_name.value.trim(),ip=d_ip.value.trim(),gen=+d_gen.value||2,channel=+d_ch.value||0;
+    if(!name||!ip) return; await api('/api/dev',{method:'POST',body:JSON.stringify({name,ip,gen,channel})}); d_name.value=''; d_ip.value=''; refreshDevs();
+  };
+
+  // Aktionen
+  btnSprayOn.onclick=()=>api('/api/spray/on',{method:'POST'});
+  btnSprayOff.onclick=()=>api('/api/spray/off',{method:'POST'});
+  btnSprayPulse.onclick=()=>api('/api/spray/pulse',{method:'POST',body:JSON.stringify({ms:+sprayMs.value||0})});
+  btnFill.onclick=()=>api('/api/fill',{method:'POST',body:JSON.stringify({liters:+fillL.value||0})});
+  btnFillCancel.onclick=()=>api('/api/fill/cancel',{method:'POST'});
+  btnTDS.onclick = async ()=>{
+    try{
+      const r = await api('/api/tds', {method: 'POST'});
+      if (r && (r.tds != null)) {
+        document.getElementById('tds').textContent = r.tds;
+        document.getElementById('temp').textContent = r.temp;
+      }
+    }catch(_){}
+  };
+  btnLogClear.onclick=()=>{document.getElementById('log').textContent='';};
+}
+init();
+</script>
+</body></html>

@@ -1,7 +1,6 @@
-fastapi 
-uvicorn 
-httpx 
-pyserial 
-opencv-python 
-apscheduler
+fastapi
+uvicorn
+pyserial
+opencv-python
 websockets
+pyaudio

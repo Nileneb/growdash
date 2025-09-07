@@ -162,24 +162,8 @@ async function init() {
     const cmd = document.getElementById('command').value.trim();
     if (!cmd) return;
     try {
-      appendLog(`[Versuch] Sende Befehl: ${cmd}`);
-      const response = await fetch('/api/command', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({command: cmd})
-      });
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`API-Fehler: ${response.status} ${errorText}`);
-      }
-      
-      const result = await response.json();
-      if (result.success) {
-        appendLog(`[Gesendet] ${cmd}`);
-      } else {
-        appendLog(`[Fehler] ${result.error || 'Unbekannter Fehler'}`);
-      }
+      await api('/api/command', {method: 'POST', body: JSON.stringify(cmd)});
+      appendLog(`[Gesendet] ${cmd}`);
     } catch (e) {
       appendLog(`[Fehler] ${e.message}`);
     }
@@ -188,24 +172,8 @@ async function init() {
   // Status-Button
   document.getElementById('btnStatus').onclick = async () => {
     try {
-      appendLog(`[Versuch] Sende Status-Befehl`);
-      const response = await fetch('/api/command', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({command: "Status"})
-      });
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`API-Fehler: ${response.status} ${errorText}`);
-      }
-      
-      const result = await response.json();
-      if (result.success) {
-        appendLog('[Gesendet] Status');
-      } else {
-        appendLog(`[Fehler] ${result.error || 'Unbekannter Fehler'}`);
-      }
+      await api('/api/command', {method: 'POST', body: JSON.stringify("Status")});
+      appendLog('[Gesendet] Status');
     } catch (e) {
       appendLog(`[Fehler] ${e.message}`);
     }
