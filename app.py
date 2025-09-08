@@ -8,8 +8,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, Response
 from pydantic import BaseModel
 
-from arduino import ArduinoManager
-from camera import Camera
+from scripts.arduino import ArduinoManager
+from scripts.camera import Camera
+from scripts.db_handler import get_db_handler
 
 # Datenmodelle für API-Endpunkte
 class CommandRequest(BaseModel):
@@ -41,12 +42,19 @@ print(f"Konfiguration: SERIAL_PORT={SERIAL_PORT}, BAUD={BAUD}")
 arduino_mgr = ArduinoManager(SERIAL_PORT, BAUD)
 camera = Camera(CAM_WIDTH, CAM_HEIGHT, CAM_FPS, audio_enabled=AUDIO_ENABLED, audio_rate=AUDIO_RATE)
 
+# Datenbankhandler initialisieren
+db_handler = get_db_handler()
+
 # Create FastAPI application
 app = FastAPI(title="GrowDash Simple", version="1.0")
 
 # Mount static directories
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.mount("/captures", StaticFiles(directory=str(CAP_DIR)), name="captures")
+
+# Daten-API-Endpunkte registrieren
+from scripts.data_api import router as data_router
+app.include_router(data_router)
 
 # Root endpoint
 @app.get("/")
@@ -170,6 +178,9 @@ async def ws(websocket: WebSocket):
     print("WebSocket Verbindung eingehend")
     await websocket.accept()
     print("WebSocket Verbindung akzeptiert")
+    
+    # Hier werden WebSocket-Verbindungen nicht mehr in einem separaten System registriert
+    
     last_seq = 0
     
     # Hintergrundtask zum kontinuierlichen Senden neuer Log-Zeilen
@@ -182,6 +193,8 @@ async def ws(websocket: WebSocket):
                 if lines:
                     print(f"WebSocket: {len(lines)} neue Log-Zeilen gefunden")
                     for line in lines:
+                        # Verarbeite die Log-Zeile mit dem DbHandler
+                        db_handler.process_arduino_message(line)
                         print(f"WebSocket sende: {line}")
                         await websocket.send_json({"type": "log", "data": line})
                     last_seq = new_seq
@@ -198,6 +211,17 @@ async def ws(websocket: WebSocket):
             "sample_rate": camera.audio_rate if camera.audio_enabled else 0
         })
         
+        # Sende aktuellen Wassersystem-Status
+        status = db_handler.get_system_status()
+        await websocket.send_json({
+            "type": "water_status",
+            "water_level": status.get("water_level", 0),
+            "spray_active": status.get("spray_active", False),
+            "filling_active": status.get("filling_active", False),
+            "last_tds": status.get("last_tds"),
+            "last_temperature": status.get("last_temperature")
+        })
+        
         # Test-Nachricht senden
         await websocket.send_json({"type": "log", "data": "=== WebSocket Verbindung hergestellt ==="})
         
@@ -207,14 +231,106 @@ async def ws(websocket: WebSocket):
         # Listen for commands to Arduino
         while True:
             # Wait for a command from the client
-            data = await websocket.receive_text()
-            print(f"WebSocket: Befehl empfangen: {data}")
+            data_raw = await websocket.receive_text()
+            print(f"WebSocket: Befehl empfangen: {data_raw}")
             
-            # Send command to Arduino
             try:
-                arduino_mgr.write(data)
+                # Versuche als JSON zu parsen, falls es ein strukturierter Befehl ist
+                import json
+                try:
+                    data_obj = json.loads(data_raw)
+                    if isinstance(data_obj, dict) and data_obj.get("type") == "water_command":
+                        # Wasserbefehl direkt verarbeiten
+                        command = data_obj.get("command", "")
+                        params = data_obj.get("params", {})
+                        
+                        # Beispiele für direkte Befehle
+                        if command == "spray_on":
+                            arduino_mgr.write("SprayOn")
+                            success = db_handler.manual_spray_on()
+                            await websocket.send_json({
+                                "type": "water_response",
+                                "result": {
+                                    "success": success,
+                                    "message": "Spray eingeschaltet"
+                                }
+                            })
+                            
+                        elif command == "spray_off":
+                            arduino_mgr.write("SprayOff")
+                            success = db_handler.manual_spray_off()
+                            await websocket.send_json({
+                                "type": "water_response",
+                                "result": {
+                                    "success": success,
+                                    "message": "Spray ausgeschaltet"
+                                }
+                            })
+                            
+                        elif command == "water_fill_start":
+                            target_liters = params.get("target")
+                            if target_liters:
+                                arduino_mgr.write(f"FillL {target_liters}")
+                                msg = f"Wasserzufuhr bis {target_liters}L gestartet"
+                                success = db_handler.manual_fill_start(target_liters=float(target_liters))
+                            else:
+                                arduino_mgr.write("FillL 5")  # Standard: 5 Liter
+                                msg = "Wasserzufuhr gestartet"
+                                success = db_handler.manual_fill_start(target_liters=5.0)
+                                
+                            await websocket.send_json({
+                                "type": "water_response",
+                                "result": {
+                                    "success": success,
+                                    "message": msg
+                                }
+                            })
+                            
+                        elif command == "water_fill_stop":
+                            arduino_mgr.write("CancelFill")
+                            success = db_handler.manual_fill_stop()
+                            await websocket.send_json({
+                                "type": "water_response",
+                                "result": {
+                                    "success": success,
+                                    "message": "Wasserzufuhr gestoppt"
+                                }
+                            })
+                            
+                        elif command == "water_level":
+                            # Status abfragen
+                            arduino_mgr.write("Status")
+                            
+                        elif command == "status":
+                            # Aktuellen Status zurücksenden
+                            status = db_handler.get_system_status()
+                            await websocket.send_json({
+                                "type": "water_status",
+                                "water_level": status.get("water_level", 0),
+                                "spray_active": status.get("spray_active", False),
+                                "filling_active": status.get("filling_active", False),
+                                "last_tds": status.get("last_tds"),
+                                "last_temperature": status.get("last_temperature")
+                            })
+                            
+                        else:
+                            await websocket.send_json({
+                                "type": "water_response",
+                                "result": {
+                                    "success": False,
+                                    "message": f"Unbekannter Befehl: {command}"
+                                }
+                            })
+                            
+                        continue
+                except json.JSONDecodeError:
+                    # Kein JSON, als einfachen Text-Befehl behandeln
+                    data = data_raw
+                    
+                # Normaler Arduino-Befehl
+                arduino_mgr.write(data_raw)
                 # Befehl als Log ausgeben (Bestätigung)
-                await websocket.send_json({"type": "log", "data": f">> {data}"})
+                await websocket.send_json({"type": "log", "data": f">> {data_raw}"})
             except Exception as e:
                 print(f"Fehler beim Senden des Befehls: {e}")
                 await websocket.send_json({"type": "log", "data": f"ERROR: {str(e)}"})
@@ -252,6 +368,8 @@ def on_shutdown():
     """Clean up resources when the application shuts down."""
     camera.close()
     arduino_mgr.close()
+    # Log-Eintrag zum Herunterfahren erstellen
+    db_handler.log_message("Anwendung wird heruntergefahren", level="info")
 
 
 if __name__ == "__main__":

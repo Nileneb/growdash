@@ -4,3 +4,6 @@ pyserial
 opencv-python
 websockets
 pyaudio
+starlette
+sqlalchemy
+alembic

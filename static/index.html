@@ -15,7 +15,35 @@
     .btn-bad { background: #dc2626; } .btn-bad:hover { background: #ef4444; }
     .btn-act { background: #2563eb; } .btn-act:hover { background: #3b82f6; }
     input { color: #111; }
+    /* Wasserstand-Anzeige-Stile */
+    .water-level-container {
+      height: 24px;
+      background: rgba(0,0,0,0.2);
+      border-radius: 12px;
+      overflow: hidden;
+      margin-top: 5px;
+    }
+    .water-level-bar {
+      height: 100%;
+      background: #3b82f6;
+      transition: width 0.5s ease;
+      border-radius: 12px;
+    }
+    .status-indicator {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 6px;
+    }
+    .control-group {
+      padding: 8px;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      margin-bottom: 12px;
+    }
   </style>
+  <script src="/static/water.js"></script>
 </head>
 <body>
   <div class="max-w-[1400px] mx-auto p-4">
@@ -36,6 +64,60 @@
           <div class="flex items-center gap-2">
             <button id="btnSend" class="btn btn-ok">Senden</button>
             <button id="btnStatus" class="btn btn-act">Status</button>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Wassersteuerung -->
+      <div class="card col-span-4">
+        <div class="font-semibold mb-3">Wassersteuerung</div>
+        
+        <!-- Wasserstand -->
+        <div class="mb-4">
+          <div class="flex justify-between items-center">
+            <div>Wasserstand:</div>
+            <div id="waterLevelText">0%</div>
+          </div>
+          <div class="water-level-container">
+            <div id="waterLevelBar" class="water-level-bar" style="width: 0%"></div>
+          </div>
+        </div>
+        
+        <!-- Sprühnebel-Steuerung -->
+        <div class="control-group">
+          <div class="flex items-center mb-2">
+            <div class="status-indicator bg-gray-300" id="sprayActiveIndicator"></div>
+            <div class="font-semibold">Sprühnebel</div>
+          </div>
+          <div class="flex items-center gap-2 mb-2">
+            <input type="number" id="sprayDuration" min="0" max="3600" placeholder="Sekunden" 
+                   class="w-24 text-sm rounded-md px-2 py-1" title="Sprühdauer in Sekunden (0 = dauerhaft)">
+            <span class="text-sm">Sekunden</span>
+          </div>
+          <button id="sprayToggleButton" class="btn btn-ok">Spray einschalten</button>
+        </div>
+        
+        <!-- Wasserzufuhr-Steuerung -->
+        <div class="control-group">
+          <div class="flex items-center mb-2">
+            <div class="status-indicator bg-gray-300" id="fillActiveIndicator"></div>
+            <div class="font-semibold">Wasserzufuhr</div>
+          </div>
+          <div class="grid grid-cols-2 gap-2 mb-2">
+            <div class="flex flex-col">
+              <label class="text-xs mb-1">Ziel-Füllstand</label>
+              <input type="number" id="fillTarget" min="0" max="100" placeholder="%" 
+                     class="w-full text-sm rounded-md px-2 py-1">
+            </div>
+            <div class="flex flex-col">
+              <label class="text-xs mb-1">Dauer (Sekunden)</label>
+              <input type="number" id="fillDuration" min="0" max="3600" placeholder="Sek" 
+                     class="w-full text-sm rounded-md px-2 py-1">
+            </div>
+          </div>
+          <div class="flex gap-2">
+            <button id="fillStartButton" class="btn btn-ok flex-1">Start</button>
+            <button id="fillStopButton" class="btn btn-bad flex-1" disabled>Stop</button>
           </div>
         </div>
       </div>
@@ -80,6 +162,8 @@ function appendLog(t) {
   if (e.textContent.length > 80000) e.textContent = e.textContent.slice(-80000);
   if (atBottom) e.scrollTop = e.scrollHeight;
 }
+// Globale Verfügbarkeit für water.js
+window.appendLog = appendLog;
 
 async function api(p, opts = {}) {
   const r = await fetch(p, {headers: H, ...opts});
@@ -89,20 +173,89 @@ async function api(p, opts = {}) {
 
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws`);
-  ws.onopen = () => appendLog('[ws] connected');
-  ws.onclose = () => {appendLog('[ws] closed'); setTimeout(connectWS, 1200);};
-  ws.onerror = () => appendLog('[ws] error');
-  ws.onmessage = e => {
+  window.ws = new WebSocket(`${proto}://${location.host}/ws`);
+  window.ws.onopen = () => appendLog('[ws] connected');
+  window.ws.onclose = () => {appendLog('[ws] closed'); setTimeout(connectWS, 1200);};
+  window.ws.onerror = () => appendLog('[ws] error');
+  window.ws.onmessage = e => {
     try {
       const m = JSON.parse(e.data);
-      if (m.type === 'log') appendLog(m.data);
+      
+      // Wassersteuerungs-Nachrichten behandeln
+      if (window.waterControls && window.waterControls.handleSocketMessage && window.waterControls.handleSocketMessage(m)) {
+        return;
+      }
+      
+      // Standard-Nachrichtentypen
+      if (m.type === 'log') {
+        appendLog(m.data);
+        
+        // Log-Zeilen auf Wasserinformationen prüfen
+        if (m.data && typeof m.data === 'string') {
+          if (m.data.includes('WaterLevel:')) {
+            const match = m.data.match(/WaterLevel:\s*(\d+)/);
+            if (match && match[1]) {
+              const level = parseInt(match[1], 10);
+              if (window.waterControls && !isNaN(level)) {
+                window.updateWaterLevel(level);
+              }
+            }
+          }
+          
+          if (m.data.includes('Spray:')) {
+            const isActive = m.data.includes('Spray: ON');
+            if (window.waterControls) {
+              window.updateSprayStatus(isActive);
+            }
+          }
+          
+          if (m.data.includes('Filling:')) {
+            const isActive = m.data.includes('Filling: ON');
+            if (window.waterControls) {
+              window.updateFillStatus(isActive);
+            }
+          }
+        }
+      }
       else if (m.type === 'audio_status') {
         document.getElementById('audioStatus').textContent = 
           `Audio Status: ${m.enabled ? 'Aktiv (' + m.sample_rate + ' Hz)' : 'Nicht aktiv'}`;
       }
-    } catch (_) {}
+      else if (m.type === 'water_status') {
+        // Direktes Wasser-Status-Update
+        if ('water_level' in m && window.updateWaterLevel) {
+          window.updateWaterLevel(m.water_level);
+        }
+        if ('spray_active' in m && window.updateSprayStatus) {
+          window.updateSprayStatus(m.spray_active);
+        }
+        if ('filling_active' in m && window.updateFillStatus) {
+          window.updateFillStatus(m.filling_active);
+        }
+      }
+    } catch (err) {
+      console.error('Fehler bei der Verarbeitung einer WebSocket-Nachricht:', err);
+    }
   };
+  
+  // Globale Funktionen für Wassersteuerung verfügbar machen
+  window.updateWaterLevel = function(level) {
+    if (window.waterControls && window.waterControls.updateWaterLevel) {
+      window.waterControls.updateWaterLevel(level);
+    }
+  }
+  
+  window.updateSprayStatus = function(active) {
+    if (window.waterControls && window.waterControls.updateSprayStatus) {
+      window.waterControls.updateSprayStatus(active);
+    }
+  }
+  
+  window.updateFillStatus = function(active) {
+    if (window.waterControls && window.waterControls.updateFillStatus) {
+      window.waterControls.updateFillStatus(active);
+    }
+  }
 }
 
 // Kamera: MJPEG mit Snapshot-Fallback
@@ -151,6 +304,11 @@ function stopAudio() {
 async function init() {
   connectWS(); 
   startCamera();
+  
+  // Wassersteuerung initialisieren
+  if (window.waterControls && window.waterControls.init) {
+    window.waterControls.init();
+  }
   
   try {
     const p = await api('/api/ports');

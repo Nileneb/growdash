@@ -1,0 +1,377 @@
+/* UNO: Spray D6, Tab D9, Pegelschalter D2->Relais D10 (invertiert),
+ * Ultraschall TRIG/ECHO (umschaltbar), DS18B20@D4, TDS@A1.
+ * 9600 Baud, Newline.
+ * Cmds: SprayOn | SprayOff | Spray <ms> | FillL <L> | CancelFill | TDS | Status
+ */
+
+#include <Arduino.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
+/*** === Pins === ***/
+#define US_SWAP_PINS 0        // 0: TRIG=12/ECHO=11, 1: TRIG=11/ECHO=12
+const uint8_t SPRAY_PIN = 6;  // HIGH=ON
+const uint8_t TAP_PIN = 9;    // HIGH=ON
+#if US_SWAP_PINS
+const uint8_t US_TRIG_PIN = 11;
+const uint8_t US_ECHO_PIN = 12;
+#else
+const uint8_t US_TRIG_PIN = 12;
+const uint8_t US_ECHO_PIN = 11;
+#endif
+const uint8_t LEVEL_SW_PIN = 2;    // GND—Schalter—D2 (INPUT_PULLUP)
+const uint8_t LEVEL_REL_PIN = 10;  // invertiert
+const uint8_t ONE_WIRE_BUS = 4;    // DS18B20
+const uint8_t TDS_PIN = A1;
+
+/*** === Geometrie/Kalibrierung ===
+ * Trage ENTWEDER den INNENUMFANG ein (TANK_CIRC_CM>0)
+ * ODER den INNENDURCHMESSER (TANK_DIAM_CM>0, Umfang = pi*D).
+ */
+const float EMPTY_DIST_CM = 62.0;  // Sensor → Boden (leer)
+const float FULL_DIST_CM = 10.0;   // Sensor → Wasser bei „voll“ (Mindestabstand)
+const float TANK_CIRC_CM = 0.0;    // << dein Wert (Umfang). Wenn Durchmesser: hier 0.0 lassen …
+const float TANK_DIAM_CM = 32.0;   // … und HIER den Durchmesser in cm eintragen
+
+// Abgeleitet (zur Laufzeit berechnet)
+const float CIRC_USED = (TANK_CIRC_CM > 0.0f) ? TANK_CIRC_CM : (TANK_DIAM_CM > 0.0f ? (PI * TANK_DIAM_CM) : 0.0f);
+const float FILL_HEIGHT_CM = (EMPTY_DIST_CM - FULL_DIST_CM);
+const float MAX_VOLUME_L = (CIRC_USED * CIRC_USED * FILL_HEIGHT_CM) / (4.0f * PI * 1000.0f);  // Zylinder V = C^2*h/(4π*1000)
+const float FULL_CAP_L = MAX_VOLUME_L * 0.95f;                                                // 95% als harter Stop
+const float DRY_MIN_L_DEF = 2.0f;
+const float DRY_MIN_L = (MAX_VOLUME_L > 0.0f) ? min(DRY_MIN_L_DEF, MAX_VOLUME_L * 0.2f) : DRY_MIN_L_DEF;
+
+/*** === Regeln / Zeiten === ***/
+const unsigned long MEAS_PERIOD_MS = 1000;
+const unsigned long MEAS_PERIOD_SPRAY_MS = 30000;
+const float FILL_RATE_LPM_EST = 6.0;
+const float FILL_TIMEOUT_FACTOR = 1.8;
+const unsigned long FILL_HARD_MAX_MS = 12UL * 60UL * 1000UL;
+
+/*** === Ultraschall === ***/
+const uint8_t US_BURST = 5;
+const float US_MIN_CM = 6.0;
+const float US_MAX_CM = 90.0;
+const float US_SPREAD_MAX_CM = 6.0;
+const float EMA_ALPHA = 0.30;
+const unsigned long US_FALLBACK_HOLD_MS = 60000UL;
+const unsigned long US_STALE_SAFE_MS = 30000UL;
+
+/*** === Zustände === ***/
+bool sprayOn = false, tabOn = false;
+float liters = NAN, distanceCm = NAN, emaDistCm = NAN;
+unsigned long lastUSOkAt = 0;
+float lastUSOkDist = NAN;
+float tapFillAmount = 0.0, tapTargetL = 0.0;
+unsigned long fillTimeoutAt = 0;
+uint8_t lvl_last = HIGH, lvl_stable = HIGH;
+unsigned long lvl_changed_at = 0;
+const unsigned long LEVEL_DEBOUNCE_MS = 30;
+unsigned long tLastMeas = 0;
+
+/*** === TDS/Temp on demand === ***/
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature dallas(&oneWire);
+float waterTempC = NAN, tdsPPM = NAN;
+
+/*** === Helpers === ***/
+inline void SprayON() {
+  digitalWrite(SPRAY_PIN, HIGH);
+  sprayOn = true;
+}
+inline void SprayOFF() {
+  digitalWrite(SPRAY_PIN, LOW);
+  sprayOn = false;
+}
+inline void TabON() {
+  digitalWrite(TAP_PIN, HIGH);
+  tabOn = true;
+}
+inline void TabOFF() {
+  digitalWrite(TAP_PIN, LOW);
+  tabOn = false;
+}
+inline void LevelRelON() {
+  digitalWrite(LEVEL_REL_PIN, HIGH);
+}
+inline void LevelRelOFF() {
+  digitalWrite(LEVEL_REL_PIN, LOW);
+}
+
+static void isort(float *a, uint8_t n) {
+  for (uint8_t i = 1; i < n; i++) {
+    float v = a[i];
+    int j = i - 1;
+    while (j >= 0 && a[j] > v) {
+      a[j + 1] = a[j];
+      j--;
+    }
+    a[j + 1] = v;
+  }
+}
+
+static float pingCm(unsigned long tout_us = 120000UL) {
+  digitalWrite(US_TRIG_PIN, LOW);
+  delayMicroseconds(3);
+  digitalWrite(US_TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(US_TRIG_PIN, LOW);
+  unsigned long dur = pulseIn(US_ECHO_PIN, HIGH, tout_us);
+  if (!dur) return NAN;
+  float cm = dur / 58.0f;
+  if (cm < US_MIN_CM || cm > US_MAX_CM) return NAN;
+  return cm;
+}
+static float burstCm(uint8_t n = US_BURST) {
+  if (n < 1) n = 1;
+  if (n > 9) n = 9;
+  float s[9];
+  uint8_t k = 0;
+  for (uint8_t i = 0; i < n; i++) {
+    float c = pingCm();
+    if (!isnan(c)) s[k++] = c;
+    delay(20);
+  }
+  if (k == 0) return NAN;
+  if (k < 3) {
+    float sum = 0;
+    for (uint8_t i = 0; i < k; i++) sum += s[i];
+    return sum / k;
+  }
+  isort(s, k);
+  float med = s[k / 2];
+  float p20 = s[(uint16_t)k * 2 / 10];
+  float p80 = s[(uint16_t)k * 8 / 10];
+  return ((p80 - p20) > US_SPREAD_MAX_CM) ? med : med;
+}
+
+/*** === Volumen aus Distanz === ***/
+float litersFromDist(float d) {
+  if (isnan(d) || CIRC_USED <= 0.0f) return NAN;
+  float span = FILL_HEIGHT_CM;          // 52 cm
+  float x = (d - FULL_DIST_CM) / span;  // 0 = voll, 1 = leer
+  x = constrain(x, 0.0f, 1.0f);
+  return MAX_VOLUME_L * (1.0f - x);
+}
+
+/*** === Messen === ***/
+void maybeMeasure() {
+  unsigned long period = sprayOn ? MEAS_PERIOD_SPRAY_MS : MEAS_PERIOD_MS;
+  if (millis() - tLastMeas < period) return;
+  tLastMeas = millis();
+
+  float d = burstCm();
+  if (isnan(d)) d = pingCm(150000UL);
+
+  if (!isnan(d)) {
+    emaDistCm = isnan(emaDistCm) ? d : (emaDistCm + EMA_ALPHA * (d - emaDistCm));
+    distanceCm = emaDistCm;
+    liters = litersFromDist(distanceCm);
+    lastUSOkAt = millis();
+    lastUSOkDist = distanceCm;
+  } else {
+    unsigned long age = millis() - lastUSOkAt;
+    if (!isnan(lastUSOkDist) && age <= US_FALLBACK_HOLD_MS) {
+      distanceCm = lastUSOkDist;
+      liters = litersFromDist(distanceCm);
+    } else {
+      distanceCm = NAN;
+      liters = NAN;
+    }
+  }
+
+  if (!isnan(liters) && liters >= FULL_CAP_L && tabOn) {
+    TabOFF();
+    Serial.println(F("SAFE: FULL->TabOFF"));
+  }
+  if (millis() - lastUSOkAt > US_STALE_SAFE_MS) {
+    if (sprayOn) {
+      SprayOFF();
+      Serial.println(F("SAFE: STALE->SprayOFF"));
+    }
+    if (tabOn) {
+      TabOFF();
+      Serial.println(F("SAFE: STALE->TabOFF"));
+    }
+  }
+  if (sprayOn && (isnan(liters) || liters <= DRY_MIN_L)) {
+    SprayOFF();
+    Serial.println(F("SAFE: DRY/NaN->SprayOFF"));
+  }
+}
+
+/*** === Pegelschalter invertiert === ***/
+void updateLevelRelay() {
+  uint8_t r = digitalRead(LEVEL_SW_PIN);  // HIGH=offen
+  static unsigned long t = 0;             // lokales Debounce
+  static uint8_t last = HIGH;
+  if (r != last) {
+    last = r;
+    t = millis();
+  }
+  if (millis() - t >= LEVEL_DEBOUNCE_MS && r != lvl_stable) {
+    lvl_stable = r;
+    if (lvl_stable == HIGH) LevelRelOFF();
+    else LevelRelON();
+  }
+}
+
+/*** === Dosiertes Füllen === ***/
+void controlWaterFill() {
+  if (!isnan(liters) && liters >= FULL_CAP_L) {
+    if (tabOn) TabOFF();
+    tapFillAmount = 0;
+    return;
+  }
+  if (millis() - lastUSOkAt > US_STALE_SAFE_MS) {
+    if (tabOn) TabOFF();
+    tapFillAmount = 0;
+    return;
+  }
+
+  if (tapFillAmount > 0.0f) {
+    if (millis() >= fillTimeoutAt) {
+      TabOFF();
+      tapFillAmount = 0;
+      Serial.println(F("SAFE: FillTimeout"));
+      return;
+    }
+    maybeMeasure();
+    if (!isnan(liters) && liters >= tapTargetL) {
+      TabOFF();
+      tapFillAmount = 0;
+      Serial.println(F("OK: FillDone"));
+      return;
+    }
+    if (!tabOn) TabON();
+  } else {
+    if (tabOn) TabOFF();
+  }
+}
+
+/*** === TDS/Temp (on demand) === ***/
+float readWaterTempC() {
+  dallas.requestTemperatures();
+  float t = dallas.getTempCByIndex(0);
+  return (t == DEVICE_DISCONNECTED_C) ? NAN : t;
+}
+int readTDSRaw(uint8_t n = 30) {
+  long acc = 0;
+  for (uint8_t i = 0; i < n; i++) {
+    acc += analogRead(TDS_PIN);
+    delay(5);
+  }
+  return (int)(acc / n);
+}
+void measureTDS() {
+  waterTempC = readWaterTempC();
+  int adc = readTDSRaw();
+  float v = adc * (5.0f / 1024.0f);
+  float ec = (133.42f * v * v * v - 255.86f * v * v + 857.39f * v);
+  if (!isnan(waterTempC)) ec *= (1.0f + 0.02f * (waterTempC - 25.0f));
+  tdsPPM = ec * 0.5f;
+  Serial.print(F("TDS="));
+  Serial.print((int)tdsPPM);
+  Serial.print(F(" TempC="));
+  if (isnan(waterTempC)) Serial.print(F("NaN"));
+  else Serial.print(waterTempC, 2);
+  Serial.print(F(" ADC="));
+  Serial.print(adc);
+  Serial.print(F(" V="));
+  Serial.println(v, 3);
+}
+
+/*** === Serial-CMDs === ***/
+void handleSerial() {
+  while (Serial.available()) {
+    String s = Serial.readStringUntil('\n');
+    s.trim();
+
+    if (s.equalsIgnoreCase("SprayOn")) {
+      maybeMeasure();
+      if (isnan(liters) || liters <= DRY_MIN_L) Serial.println(F("ERR"));
+      else {
+        SprayON();
+        Serial.println(F("OK"));
+      }
+    } else if (s.equalsIgnoreCase("SprayOff")) {
+      SprayOFF();
+      Serial.println(F("OK"));
+    } else if (s.startsWith("Spray ")) {
+      unsigned long ms = s.substring(6).toInt();
+      maybeMeasure();
+      if (ms > 0 && !isnan(liters) && liters > DRY_MIN_L) {
+        SprayON();
+        delay(ms);
+        SprayOFF();
+        Serial.println(F("OK"));
+      } else Serial.println(F("ERR"));
+    } else if (s.startsWith("FillL ")) {
+      float l = s.substring(6).toFloat();
+      maybeMeasure();
+      if (l <= 0 || isnan(liters) || liters >= FULL_CAP_L || tapFillAmount > 0) {
+        Serial.println(F("ERR"));
+      } else {
+        tapFillAmount = l;
+        tapTargetL = min(liters + l, FULL_CAP_L);
+        float estMin = l / max(FILL_RATE_LPM_EST, 0.1f);
+        unsigned long softMs = (unsigned long)(estMin * 60.0f * 1000.0f * FILL_TIMEOUT_FACTOR);
+        fillTimeoutAt = millis() + min(softMs, FILL_HARD_MAX_MS);
+        TabON();
+        Serial.println(F("OK"));
+      }
+    } else if (s.equalsIgnoreCase("CancelFill")) {
+      tapFillAmount = 0;
+      TabOFF();
+      Serial.println(F("OK"));
+    } else if (s.equalsIgnoreCase("TDS")) {
+      measureTDS();
+    } else if (s.equalsIgnoreCase("Status")) {
+      Serial.print(F("dist_cm="));
+      if (isnan(distanceCm)) Serial.print(F("NaN"));
+      else Serial.print(distanceCm, 1);
+      Serial.print(F(" liters="));
+      if (isnan(liters)) Serial.print(F("NaN"));
+      else Serial.print(liters, 2);
+      Serial.print(F(" Spray="));
+      Serial.print(sprayOn ? F("ON") : F("OFF"));
+      Serial.print(F(" Tab="));
+      Serial.print(tabOn ? F("ON") : F("OFF"));
+      Serial.print(F(" LvlSw="));
+      Serial.print(lvl_stable == HIGH ? F("HIGH") : F("LOW"));
+      Serial.print(F(" LvlRel="));
+      Serial.print(digitalRead(LEVEL_REL_PIN) ? F("ON") : F("OFF"));
+      Serial.print(F(" age_ms="));
+      Serial.print(millis() - lastUSOkAt);
+      Serial.print(F(" MAX_L="));
+      Serial.print(MAX_VOLUME_L, 2);
+      Serial.println();
+    } else {
+      Serial.println(F("ERR"));
+    }
+  }
+}
+
+/*** === Setup/Loop === ***/
+void setup() {
+  Serial.begin(9600);
+  pinMode(SPRAY_PIN, OUTPUT);
+  SprayOFF();
+  pinMode(TAP_PIN, OUTPUT);
+  TabOFF();
+  pinMode(LEVEL_REL_PIN, OUTPUT);
+  LevelRelOFF();
+  pinMode(LEVEL_SW_PIN, INPUT_PULLUP);
+  pinMode(US_TRIG_PIN, OUTPUT);
+  digitalWrite(US_TRIG_PIN, LOW);
+  pinMode(US_ECHO_PIN, INPUT);
+  dallas.begin();
+  maybeMeasure();
+}
+
+void loop() {
+  updateLevelRelay();
+  maybeMeasure();
+  controlWaterFill();
+  handleSerial();
+}
