@@ -11,7 +11,7 @@ import json
 import logging
 import subprocess
 from typing import Dict, List, Optional, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from queue import Queue
 import threading
 
@@ -58,6 +58,8 @@ class AgentConfig(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = 'utf-8'
+        extra = 'ignore'  # Extra Keys in .env ignorieren
+        extra = 'ignore'  # Extra Keys in .env ignorieren
 
 
 class SerialProtocol:
@@ -120,7 +122,7 @@ class SerialProtocol:
         """
         try:
             telemetry = {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "raw": line
             }
             
@@ -144,7 +146,7 @@ class SerialProtocol:
                         if temp_val != "NaN":
                             # Separate Telemetrie für Temperatur
                             self.receive_queue.put({
-                                "timestamp": datetime.utcnow().isoformat(),
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
                                 "sensor_id": "temperature",
                                 "value": float(temp_val),
                                 "unit": "celsius",
@@ -292,7 +294,7 @@ class LaravelClient:
                 json={
                     "success": success,
                     "message": message,
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": datetime.now(timezone.utc).isoformat()
                 },
                 timeout=10
             )
@@ -311,7 +313,7 @@ class LaravelClient:
                     "device_id": self.config.device_public_id,
                     "level": level,
                     "message": message,
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": datetime.now(timezone.utc).isoformat()
                 },
                 timeout=5
             )
@@ -373,7 +375,7 @@ class FirmwareManager:
         
         try:
             # Arduino-CLI Befehl ausführen
-            timestamp = datetime.utcnow().isoformat()
+            timestamp = datetime.now(timezone.utc).isoformat()
             
             logger.info(f"[{timestamp}] Starte Firmware-Flash: {module_id} -> {target_port}")
             
@@ -431,13 +433,13 @@ class FirmwareManager:
         except subprocess.TimeoutExpired:
             msg = "Firmware-Flash timeout"
             logger.error(msg)
-            self._log_flash_event(datetime.utcnow().isoformat(), module_id, target_port, False, msg)
+            self._log_flash_event(datetime.now(timezone.utc).isoformat(), module_id, target_port, False, msg)
             return False, msg
             
         except Exception as e:
             msg = f"Fehler beim Flashen: {e}"
             logger.error(msg)
-            self._log_flash_event(datetime.utcnow().isoformat(), module_id, target_port, False, msg)
+            self._log_flash_event(datetime.now(timezone.utc).isoformat(), module_id, target_port, False, msg)
             return False, msg
     
     def _log_flash_event(self, timestamp: str, module: str, port: str, success: bool, error: str = ""):
@@ -490,6 +492,46 @@ class HardwareAgent:
         
         logger.info(f"Agent gestartet für Device: {self.config.device_public_id}")
         logger.info(f"Laravel Backend: {self.config.laravel_base_url}{self.config.laravel_api_path}")
+        
+        # Startup Health Check
+        self._startup_health_check()
+    
+    def _startup_health_check(self):
+        """Startup-Health-Check: Verbindung zu Laravel testen"""
+        logger.info("Führe Startup-Health-Check durch...")
+        
+        # Device-Credentials prüfen
+        if not self.config.device_public_id or not self.config.device_token:
+            logger.error("❌ DEVICE_PUBLIC_ID oder DEVICE_TOKEN fehlt in .env!")
+            logger.error("Bitte .env konfigurieren und Agent neu starten.")
+            return
+        
+        # Laravel-Verbindung testen
+        try:
+            response = self.laravel.session.get(
+                f"{self.laravel.base_url}/commands/pending",
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                logger.info("✅ Laravel-Backend erreichbar und Auth erfolgreich")
+            elif response.status_code == 404:
+                logger.error("❌ Laravel-Route nicht gefunden (404)")
+                logger.error(f"URL: {self.laravel.base_url}/commands/pending")
+                logger.error("Prüfe routes/api.php in Laravel: Route::prefix('growdash/agent')")
+            elif response.status_code in [401, 403]:
+                logger.error("❌ Auth fehlgeschlagen (401/403)")
+                logger.error("Device-Token oder Public-ID stimmen nicht mit Laravel-DB überein")
+                logger.error(f"Device-ID: {self.config.device_public_id}")
+            else:
+                logger.warning(f"⚠️ Unerwarteter Status-Code: {response.status_code}")
+                
+        except requests.exceptions.ConnectionError:
+            logger.error("❌ Verbindung zu Laravel fehlgeschlagen")
+            logger.error(f"URL: {self.config.laravel_base_url}")
+            logger.error("Ist Laravel erreichbar? Netzwerk prüfen!")
+        except Exception as e:
+            logger.error(f"❌ Health-Check fehlgeschlagen: {e}")
     
     def execute_command(self, command: Dict) -> tuple[bool, str]:
         """
