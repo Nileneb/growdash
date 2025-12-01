@@ -56,28 +56,56 @@ class DirectLogin:
                     "email": email,
                     "password": password
                 },
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json"
+                },
                 timeout=10
             )
             
             if response.status_code == 200:
-                data = response.json()
-                token = data.get("token") or data.get("access_token")
-                
-                if token:
-                    print("✅ Login erfolgreich")
-                    return token
-                else:
-                    print("❌ Kein Token in Response")
+                # Erfolgreich: erst Text NICHT ausgeben, direkt JSON parsen
+                try:
+                    data = response.json()
+                except ValueError:
+                    print("❌ Antwort kein gültiges JSON")
+                    print(response.text[:500])
                     return None
-            
-            elif response.status_code == 401:
-                print("❌ Login fehlgeschlagen: Falsche Credentials")
+
+                token = data.get("token") or data.get("access_token")
+                if not token:
+                    print("❌ Kein Token in Response")
+                    print(data)
+                    return None
+
+                # Gültigkeits-Heuristik: Sanctum-Format id|hash
+                if "|" not in token:
+                    print("⚠️ Unerwartetes Token-Format (kein '|'). Weiter, aber Laravel-Konfiguration prüfen.")
+
+                print("✅ Login erfolgreich")
+                # Maskiertes Token zur Kontrolle (erste 8 Zeichen)
+                masked = token.split('|')[0] + '|…' if '|' in token else token[:8] + '…'
+                print(f"🔎 Erhaltenes User-Token: {masked}")
+                return token
+
+            # Typische Fehlerfälle differenziert behandeln
+            if response.status_code in (401, 403):
+                print(f"❌ Login verweigert ({response.status_code})")
+                self._print_error_body(response)
                 return None
-            
-            else:
-                print(f"❌ Login fehlgeschlagen: {response.status_code}")
-                print(response.text)
+            if response.status_code == 422:
+                print("❌ Validierungsfehler (422)")
+                self._print_error_body(response)
                 return None
+            if response.status_code >= 500:
+                print(f"❌ Serverfehler ({response.status_code})")
+                self._print_error_body(response)
+                return None
+
+            # Fallback für andere Codes
+            print(f"❌ Unerwarteter Status {response.status_code}")
+            self._print_error_body(response)
+            return None
                 
         except requests.exceptions.ConnectionError:
             print(f"❌ Verbindung zu {self.base_url} fehlgeschlagen")
@@ -103,43 +131,100 @@ class DirectLogin:
             # Device-Info sammeln
             import socket
             import platform
+            import uuid
+            
+            # Bootstrap-ID generieren (Hardware-eindeutig)
+            # In Production: MAC-Adresse, CPU-Serial etc. verwenden
+            bootstrap_id = f"growdash-{socket.gethostname()}-{uuid.getnode():012x}"
             
             device_info = {
+                "bootstrap_id": bootstrap_id,
                 "name": device_name or f"GrowDash {socket.gethostname()}",
-                "platform": platform.system().lower(),
-                "version": "2.0",
-                "hostname": socket.gethostname(),
+                "device_info": {
+                    "platform": platform.system().lower(),
+                    "version": "2.0",
+                    "hostname": socket.gethostname(),
+                }
             }
-            
+            # Debug-Ausgabe des Zielendpunkts & Header (teilmaskiert)
+            masked_user_token = user_token.split('|')[0] + '|…' if '|' in user_token else user_token[:8] + '…'
+            print(f"➡️ POST /api/growdash/devices/register mit Bearer {masked_user_token}")
+            print(f"🆔 Bootstrap-ID: {bootstrap_id}")
+
             response = requests.post(
                 f"{self.base_url}/api/growdash/devices/register",
                 json=device_info,
                 headers={
                     "Authorization": f"Bearer {user_token}",
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
+                    "Accept": "application/json"
                 },
                 timeout=10
             )
-            
-            if response.status_code in [200, 201]:
-                data = response.json()
-                
+
+            # Erfolgsfälle
+            if response.status_code in (200, 201):
+                ct = response.headers.get('Content-Type','')
+                if 'application/json' not in ct.lower():
+                    print(f"❌ Unerwarteter Content-Type '{ct}' bei Status {response.status_code} (erwartet JSON).")
+                    self._print_error_body(response)
+                    print("🔧 Wahrscheinlich liefert Laravel eine HTML-View statt API-JSON. Prüfe Route in routes/api.php und API-Controller.")
+                    return None
+                try:
+                    data = response.json()
+                except ValueError:
+                    print("❌ Antwort kein gültiges JSON")
+                    self._print_error_body(response)
+                    return None
+
                 device_id = data.get("device_id") or data.get("public_id")
                 agent_token = data.get("agent_token") or data.get("token")
-                
-                if device_id and agent_token:
-                    print("✅ Device registriert")
-                    print(f"   Device-ID: {device_id}")
-                    return device_id, agent_token
-                else:
-                    print("❌ Fehlende Werte in Response")
+                if not device_id or not agent_token:
+                    print("❌ Fehlende Werte in Erfolgs-Response")
                     print(data)
                     return None
-            
-            else:
-                print(f"❌ Registrierung fehlgeschlagen: {response.status_code}")
-                print(response.text)
+
+                print("✅ Device registriert")
+                print(f"   Device-ID: {device_id}")
+                masked_agent = agent_token[:8] + '…'
+                print(f"   Agent-Token: {masked_agent}")
+                return device_id, agent_token
+
+            # Fehlerszenarien differenziert
+            if response.status_code in (401, 403):
+                print(f"❌ Keine Berechtigung zur Registrierung ({response.status_code}). Prüfe User-Token oder auth:sanctum Middleware.")
+                self._print_error_body(response)
                 return None
+            if response.status_code == 404:
+                print("❌ Endpoint nicht gefunden (404). Wahrscheinlich fehlt Route oder Prefix stimmt nicht.")
+                self._print_error_body(response)
+                print("🔍 Erwartet laut Python: POST /api/growdash/devices/register unter Basis-URL", self.base_url)
+                return None
+            if response.status_code == 200:
+                # Sonderfall: 200 aber kein JSON (meist HTML-Landing-Page)
+                ct = response.headers.get('Content-Type','')
+                if 'application/json' not in ct.lower():
+                    print("❌ 200 OK aber HTML statt JSON – API-Route fehlt oder falsches Guard.")
+                    print("   Prüfe: routes/api.php enthält innerhalb prefix('growdash')->middleware('auth:sanctum') die Zeile:")
+                    print("   Route::post('/devices/register', [DeviceController::class, 'register']);")
+                    print("   Und stelle sicher, dass kein Web-Route diesen Pfad überschreibt.")
+                    self._print_error_body(response)
+                    return None
+            if response.status_code == 422:
+                print("❌ Validierungsfehler (422) – Felder prüfen.")
+                self._print_error_body(response)
+                print("📦 Gesendeter Body:", device_info)
+                print("💡 Laravel erwartet: bootstrap_id (required), name (optional), device_info (optional JSON)")
+                return None
+            if response.status_code >= 500:
+                print(f"❌ Serverfehler ({response.status_code}) – Laravel Logs prüfen.")
+                self._print_error_body(response)
+                return None
+
+            # Fallback
+            print(f"❌ Unerwarteter Status {response.status_code}")
+            self._print_error_body(response)
+            return None
                 
         except Exception as e:
             print(f"❌ Fehler bei Registrierung: {e}")
@@ -160,6 +245,24 @@ class DirectLogin:
             print("🔒 User-Token revoked (Sicherheit)")
         except Exception:
             pass  # Nicht kritisch
+
+    def _print_error_body(self, response: requests.Response):
+        """Hilfsfunktion: gib Fehler-Body (JSON oder Text) strukturiert aus."""
+        body_printed = False
+        try:
+            data = response.json()
+            print("🧪 Response JSON:")
+            print(data)
+            body_printed = True
+        except ValueError:
+            # Kein JSON – zeige ersten Teil des Textes
+            pass
+        if not body_printed:
+            text = response.text
+            if len(text) > 1000:
+                text = text[:1000] + "… (gekürzt)"
+            print("📄 Response Text:")
+            print(text)
     
     def save_to_env(self, device_id: str, agent_token: str):
         """Speichere Device-Credentials in .env"""
