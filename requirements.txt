@@ -7,3 +7,4 @@ pyaudio
 starlette
 sqlalchemy
 alembic
+requests
