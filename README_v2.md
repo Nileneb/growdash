@@ -5,36 +5,86 @@
 Die gesamte Business-Logik wird von einer externen Laravel-App übernommen. 
 Dieser Agent stellt nur noch Hardware-Zugriff zur Verfügung.
 
-## 🚀 Quick Start
+## 🚀 Quick Start (Komplett-Anleitung)
 
-### 1. Ersteinrichtung - Device Pairing
+### 1. Installation
 
 ```bash
 cd ~/growdash
-source .venv/bin/activate
-python pairing.py
+./install.sh
 ```
 
-Gibt dir einen **6-stelligen Code**, den du in der Laravel-Web-UI eingibst:
+Das installiert:
+- ✅ Python Virtual Environment
+- ✅ Dependencies
+- ✅ .env Konfiguration
 
+### 2. Onboarding
+
+```bash
+./setup.sh
 ```
-╔════════════════════════════════════╗
-║  Dein Code: 123456                ║
-╚════════════════════════════════════╝
 
-📱 Gehe zu: https://grow.linn.games/devices/pair
-🔢 Gib den Code ein: 123456
+**Wähle deinen Modus:**
+
+#### Option 1: Pairing-Code (Empfohlen) 🔢
+```
+→ Agent generiert 6-stelligen Code
+→ Du gibst ihn auf grow.linn.games ein
+→ Sicher & benutzerfreundlich
 ```
 
-### 2. Agent starten
+#### Option 2: Direct Login (Power-User) 🔐
+```
+→ Login mit Email + Passwort
+→ Device wird automatisch registriert
+→ Schnell für Dev/Advanced-User
+```
 
-Nach erfolgreichem Pairing:
+### 3. Agent starten
 
 ```bash
 ./grow_start.sh
 ```
 
-**Das war's!** Der Agent ist mit deinem User-Account verknüpft. 🎉
+**Das war's!** 🎉
+
+---
+
+## 📖 Alternative: Manuelle Schritte
+
+Falls du die Skripte nicht nutzen willst:
+
+### Installation
+
+```bash
+cd ~/growdash
+
+# Virtual Environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Dependencies
+pip install -r requirements.txt
+
+# Konfiguration
+cp .env.example .env
+```
+
+### Ersteinrichtung - Onboarding Wizard
+
+```bash
+source .venv/bin/activate
+python bootstrap.py
+```
+
+### Agent starten
+
+Nach erfolgreichem Onboarding:
+
+```bash
+./grow_start.sh
+```
 
 ---
 

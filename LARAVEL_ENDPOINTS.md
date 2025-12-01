@@ -1,6 +1,181 @@
 # Laravel API Endpoints für GrowDash Agent
 
-## 🔗 Pairing Endpoints
+## 🎯 Zwei Onboarding-Modi
+
+### Modus 1: Pairing-Code-Flow (Empfohlen, Standard)
+→ Agent generiert Code, User gibt ihn in Web-UI ein
+
+### Modus 2: Direct-Login-Flow (Power-User, Dev)
+→ Agent fragt nach Email+Passwort, registriert sich automatisch
+
+---
+
+## 🔐 Direct-Login-Flow (NEU)
+
+### 1. User-Login (API)
+
+**POST** `/api/auth/login`
+
+**Request:**
+```json
+{
+  "email": "user@example.com",
+  "password": "secret123"
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "token": "1|abc123xyz...",
+  "user": {
+    "id": 1,
+    "name": "John Doe",
+    "email": "user@example.com"
+  }
+}
+```
+
+**Laravel-Implementierung (Sanctum):**
+```php
+// app/Http/Controllers/Auth/ApiAuthController.php
+
+public function login(Request $request)
+{
+    $credentials = $request->validate([
+        'email' => 'required|email',
+        'password' => 'required',
+    ]);
+    
+    if (!Auth::attempt($credentials)) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Invalid credentials'
+        ], 401);
+    }
+    
+    $user = Auth::user();
+    
+    // Token erstellen (wird nach Device-Registrierung revoked!)
+    $token = $user->createToken('agent-bootstrap')->plainTextToken;
+    
+    return response()->json([
+        'success' => true,
+        'token' => $token,
+        'user' => [
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+        ],
+    ]);
+}
+```
+
+### 2. Device registrieren (mit User-Token)
+
+**POST** `/api/growdash/devices/register`
+
+**Headers:**
+- `Authorization: Bearer 1|abc123xyz...`
+
+**Request:**
+```json
+{
+  "name": "GrowDash Pi Kitchen",
+  "platform": "linux",
+  "version": "2.0",
+  "hostname": "raspberrypi"
+}
+```
+
+**Response (201):**
+```json
+{
+  "success": true,
+  "device_id": "growdash-a1b2",
+  "agent_token": "plaintext-device-token-hier",
+  "message": "Device registered successfully"
+}
+```
+
+**Laravel-Implementierung:**
+```php
+// app/Http/Controllers/GrowDash/DeviceController.php
+
+public function register(Request $request)
+{
+    $validated = $request->validate([
+        'name' => 'nullable|string|max:255',
+        'platform' => 'nullable|string',
+        'version' => 'nullable|string',
+        'hostname' => 'nullable|string',
+    ]);
+    
+    // User aus Token
+    $user = auth()->user();
+    
+    // Device-ID generieren
+    $publicId = 'growdash-' . Str::random(4);
+    
+    // Agent-Token generieren
+    $agentToken = Str::random(64);
+    
+    // Device erstellen
+    $device = Device::create([
+        'user_id' => $user->id,
+        'public_id' => $publicId,
+        'name' => $validated['name'] ?? 'GrowDash Device',
+        'agent_token' => Hash::make($agentToken), // Hash speichern!
+        'device_info' => $validated,
+        'status' => 'active',
+    ]);
+    
+    // Klartext-Token nur im Response zurückgeben!
+    return response()->json([
+        'success' => true,
+        'device_id' => $device->public_id,
+        'agent_token' => $agentToken, // Nur hier im Klartext!
+        'message' => 'Device registered successfully',
+    ], 201);
+}
+```
+
+### 3. User-Token revoken (nach Registrierung)
+
+**POST** `/api/auth/logout`
+
+**Headers:**
+- `Authorization: Bearer 1|abc123xyz...`
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Logged out successfully"
+}
+```
+
+**Laravel-Implementierung:**
+```php
+public function logout(Request $request)
+{
+    // Aktuellen Token revoken
+    $request->user()->currentAccessToken()->delete();
+    
+    return response()->json([
+        'success' => true,
+        'message' => 'Logged out successfully',
+    ]);
+}
+```
+
+**⚠️ WICHTIG:** Agent ruft das direkt nach Device-Registrierung auf!  
+Damit liegt kein User-Token auf dem Device.
+
+---
+
+## 🔗 Pairing-Code-Flow (Bestehend)
 
 ### 1. Pairing initiieren
 
@@ -310,27 +485,42 @@ Headers:
 ```php
 // routes/api.php
 
+use App\Http\Controllers\Auth\ApiAuthController;
 use App\Http\Controllers\GrowDash\PairingController;
 use App\Http\Controllers\GrowDash\AgentController;
+use App\Http\Controllers\GrowDash\DeviceController;
 
-Route::prefix('growdash/agent')->group(function () {
+// ===== Auth Endpoints (für Direct-Login-Flow) =====
+Route::prefix('auth')->group(function () {
+    Route::post('/login', [ApiAuthController::class, 'login']);
+    Route::post('/logout', [ApiAuthController::class, 'logout'])->middleware('auth:sanctum');
+});
+
+// ===== GrowDash Agent Endpoints =====
+Route::prefix('growdash')->group(function () {
     
-    // Pairing (keine Auth)
-    Route::post('/pairing/init', [PairingController::class, 'init']);
-    Route::get('/pairing/status', [PairingController::class, 'status']);
+    // --- Agent Onboarding ---
     
-    // Agent Endpoints (Device-Token-Auth)
-    Route::middleware('device.auth')->group(function () {
+    // Pairing-Code-Flow (keine Auth)
+    Route::prefix('agent/pairing')->group(function () {
+        Route::post('/init', [PairingController::class, 'init']);
+        Route::get('/status', [PairingController::class, 'status']);
+    });
+    
+    // Direct-Login-Flow (User-Auth)
+    Route::middleware('auth:sanctum')->group(function () {
+        Route::post('/devices/register', [DeviceController::class, 'register']);
+        Route::post('/devices/pair', [DeviceController::class, 'pair']); // Web-UI
+    });
+    
+    // --- Agent Runtime (Device-Token-Auth) ---
+    
+    Route::prefix('agent')->middleware('device.auth')->group(function () {
         Route::post('/telemetry', [AgentController::class, 'telemetry']);
         Route::get('/commands/pending', [AgentController::class, 'pendingCommands']);
         Route::post('/commands/{id}/result', [AgentController::class, 'commandResult']);
         Route::post('/logs', [AgentController::class, 'logs']);
     });
-});
-
-// Web-UI Pairing (User-Auth)
-Route::middleware('auth:sanctum')->group(function () {
-    Route::post('/growdash/devices/pair', [DeviceController::class, 'pair']);
 });
 ```
 

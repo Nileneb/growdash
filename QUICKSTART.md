@@ -1,16 +1,45 @@
 # Agent Konfiguration - Quick Start
 
-## 🔗 Ersteinrichtung: Device Pairing
+## 🚀 Ersteinrichtung - Onboarding Wizard
 
-### 1. Pairing-Prozess starten
+### Starte den Wizard:
 
 ```bash
 cd ~/growdash
 source .venv/bin/activate
-python pairing.py
+python bootstrap.py
 ```
 
-Der Agent generiert einen **6-stelligen Pairing-Code**:
+### Wähle deinen Onboarding-Modus:
+
+```
+🌱 GrowDash Agent - Ersteinrichtung
+====================================
+
+Wähle einen Onboarding-Modus:
+
+1) 🔢 Pairing-Code (Empfohlen)
+   → Agent generiert 6-stelligen Code
+   → Du gibst ihn in der Web-UI ein
+   → Sicher & einfach
+
+2) 🔐 Direct Login (Advanced)
+   → Login mit Email & Passwort
+   → Device wird automatisch registriert
+   → Schnell für Power-User/Dev
+
+3) ❌ Abbrechen
+
+Auswahl (1-3):
+```
+
+---
+
+## Option 1: 🔢 Pairing-Code-Flow (Empfohlen)
+
+### 1. Wähle Option "1"
+
+Der Agent generiert einen **6-stelligen Code**:
 
 ```
 ╔════════════════════════════════════════════════════════╗
@@ -35,11 +64,6 @@ Der Agent generiert einen **6-stelligen Pairing-Code**:
 
 ### 3. Automatische Konfiguration
 
-Der Agent erhält automatisch:
-- ✅ Device-Token (wird in `.env` gespeichert)
-- ✅ Verknüpfung mit deinem User-Account
-- ✅ Berechtigung, Daten zu senden
-
 ```
 ✅ Pairing erfolgreich!
    Verknüpft mit User: deine@email.de
@@ -47,19 +71,69 @@ Der Agent erhält automatisch:
 ✅ Credentials gespeichert
 ```
 
-### 4. Agent starten
+---
+
+## Option 2: 🔐 Direct-Login-Flow (Power-User)
+
+### 1. Wähle Option "2"
+
+Der Agent fragt nach deinen Laravel-Credentials:
+
+```
+🔐 Direct Login - Device Registration
+======================================
+
+⚠️  WICHTIG: Email & Passwort werden NICHT gespeichert!
+   Nur Device-Token wird in .env geschrieben.
+
+📧 Email: user@example.com
+🔑 Passwort: ********
+```
+
+### 2. Automatische Registrierung
+
+```
+🔐 Authentifiziere User...
+✅ Login erfolgreich
+
+📱 Device-Name (Enter für Auto): Kitchen Pi
+
+📱 Registriere Device...
+✅ Device registriert
+   Device-ID: growdash-a1b2
+🔒 User-Token revoked (Sicherheit)
+
+💾 Speichere Credentials in .env...
+✅ Credentials gespeichert
+
+====================================
+✅ Device registriert und verknüpft!
+====================================
+
+Device-ID: growdash-a1b2
+```
+
+### ⚠️ Sicherheit
+
+- **Email & Passwort** werden NICHT gespeichert
+- **User-Token** wird sofort nach Registrierung revoked
+- Nur **Device-Token** (minimale Rechte) bleibt in `.env`
+
+---
+
+## 🎯 Agent starten
+
+Nach erfolgreichem Onboarding (egal welcher Modus):
 
 ```bash
 ./grow_start.sh
 ```
 
+**Das war's!** 🎉
+
 ---
 
-## 🔧 Manuelle Konfiguration (Alternative)
-
-Falls du die Credentials bereits hast:
-
-## 1. .env Datei konfigurieren
+## 🔧 Ersteinrichtung: Device Pairing (Legacy - wird durch bootstrap.py ersetzt)
 
 ```bash
 cp .env.example .env

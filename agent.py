@@ -6,6 +6,7 @@ Keine Business-Logik, nur Device-Token-Auth und Hardware-Kommunikation.
 """
 
 import os
+import sys
 import time
 import json
 import logging
@@ -502,9 +503,18 @@ class HardwareAgent:
         
         # Device-Credentials prüfen
         if not self.config.device_public_id or not self.config.device_token:
+            logger.error("")
+            logger.error("="*60)
             logger.error("❌ DEVICE_PUBLIC_ID oder DEVICE_TOKEN fehlt in .env!")
-            logger.error("Bitte .env konfigurieren und Agent neu starten.")
-            return
+            logger.error("="*60)
+            logger.error("")
+            logger.error("Bitte führe zuerst das Onboarding durch:")
+            logger.error("  python bootstrap.py")
+            logger.error("")
+            logger.error("Oder für Pairing-Code direkt:")
+            logger.error("  python pairing.py")
+            logger.error("")
+            sys.exit(1)
         
         # Laravel-Verbindung testen
         try:
