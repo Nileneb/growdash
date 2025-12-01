@@ -5,6 +5,39 @@
 Die gesamte Business-Logik wird von einer externen Laravel-App übernommen. 
 Dieser Agent stellt nur noch Hardware-Zugriff zur Verfügung.
 
+## 🚀 Quick Start
+
+### 1. Ersteinrichtung - Device Pairing
+
+```bash
+cd ~/growdash
+source .venv/bin/activate
+python pairing.py
+```
+
+Gibt dir einen **6-stelligen Code**, den du in der Laravel-Web-UI eingibst:
+
+```
+╔════════════════════════════════════╗
+║  Dein Code: 123456                ║
+╚════════════════════════════════════╝
+
+📱 Gehe zu: https://grow.linn.games/devices/pair
+🔢 Gib den Code ein: 123456
+```
+
+### 2. Agent starten
+
+Nach erfolgreichem Pairing:
+
+```bash
+./grow_start.sh
+```
+
+**Das war's!** Der Agent ist mit deinem User-Account verknüpft. 🎉
+
+---
+
 ## Architektur
 
 ```
