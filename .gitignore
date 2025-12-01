@@ -43,5 +43,11 @@ Thumbs.db
 captures/
 data/
 
+# Environment & Secrets
+.env
+
+# Firmware Flash Log
+firmware/flash_log.json
+
 # Logs
 *.log
