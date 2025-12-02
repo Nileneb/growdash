@@ -79,9 +79,11 @@ class SerialProtocol:
         self.port = port
         self.baud = baud
         self.ser: Optional[serial.Serial] = None
-        self.receive_queue = Queue()
+        self.receive_queue = Queue()  # Für Telemetrie
+        self.command_response_queue = Queue()  # Für Command-Antworten
         self._stop_event = threading.Event()
         self._reader_thread = None
+        self._waiting_for_response = False
         
         self._connect()
     
@@ -124,8 +126,14 @@ class SerialProtocol:
         - "TDS=320 TempC=22.5"
         - "Spray: ON"
         - "Tab: ON"
+        - Direkte Command-Antworten (wenn _waiting_for_response aktiv)
         """
         try:
+            # Wenn wir auf eine Command-Antwort warten, alles in command_response_queue
+            if self._waiting_for_response:
+                self.command_response_queue.put(line)
+                return
+            
             telemetry = {
                 "measured_at": datetime.now(timezone.utc).isoformat(),
                 "raw": line
@@ -180,7 +188,7 @@ class SerialProtocol:
     
     def send_command(self, command: str) -> bool:
         """
-        Befehl an Arduino senden.
+        Befehl an Arduino senden (ohne auf Antwort zu warten).
         
         Beispiele:
         - "SprayOn" / "SprayOff"
@@ -200,6 +208,49 @@ class SerialProtocol:
         except Exception as e:
             logger.error(f"Fehler beim Senden von '{command}': {e}")
             return False
+    
+    def send_command_with_response(self, command: str, timeout: float = 5.0) -> Optional[str]:
+        """
+        Befehl an Arduino senden und auf Antwort warten.
+        
+        Args:
+            command: Der zu sendende Befehl
+            timeout: Maximale Wartezeit in Sekunden
+            
+        Returns:
+            Arduino-Antwort als String oder None bei Timeout/Fehler
+        """
+        try:
+            if not self.ser or not self.ser.is_open:
+                return None
+            
+            # Command-Response-Queue leeren
+            while not self.command_response_queue.empty():
+                self.command_response_queue.get()
+            
+            # Flag setzen dass wir auf Antwort warten
+            self._waiting_for_response = True
+            
+            # Befehl senden
+            self.ser.write(f"{command}\n".encode('utf-8'))
+            self.ser.flush()
+            logger.info(f"Befehl an Arduino (mit Response): {command}")
+            
+            # Auf Antwort warten
+            try:
+                response = self.command_response_queue.get(timeout=timeout)
+                logger.info(f"Arduino Antwort: {response}")
+                return response
+            except Exception:
+                logger.warning(f"Timeout bei Command '{command}' (keine Antwort nach {timeout}s)")
+                return None
+            finally:
+                self._waiting_for_response = False
+                
+        except Exception as e:
+            logger.error(f"Fehler beim Senden von '{command}': {e}")
+            self._waiting_for_response = False
+            return None
     
     def get_telemetry_batch(self, max_items: int = 100) -> List[Dict]:
         """Telemetrie-Batch aus Queue holen"""
@@ -942,9 +993,14 @@ class HardwareAgent:
                 if not arduino_command:
                     return False, "Kein command in params angegeben"
                 
-                # Direkt an Arduino senden
-                self.serial.send_command(arduino_command)
-                return True, f"Command '{arduino_command}' sent to Arduino"
+                # An Arduino senden und auf Antwort warten
+                response = self.serial.send_command_with_response(arduino_command, timeout=5.0)
+                
+                if response is not None:
+                    return True, f"Arduino: {response}"
+                else:
+                    # Auch bei Timeout als Erfolg werten (Befehl wurde gesendet)
+                    return True, f"Command '{arduino_command}' sent (no response)"
             
             # Legacy: Spray-Befehle
             elif cmd_type == "spray_on":
