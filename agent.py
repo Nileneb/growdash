@@ -14,6 +14,7 @@ import subprocess
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from queue import Queue
+from pathlib import Path
 import threading
 
 import requests
@@ -258,15 +259,16 @@ class LaravelClient:
         """
         Befehle von Laravel abfragen (Polling-Loop).
         
-        Erwartetes Response-Format:
+        Erwartetes Response-Format (neue Laravel-API):
         {
+            "success": true,
             "commands": [
                 {
-                    "id": "cmd-123",
-                    "type": "spray_on",
-                    "params": {"duration": 5}
-                },
-                ...
+                    "id": 42,
+                    "type": "serial_command",
+                    "params": {"command": "STATUS"},
+                    "created_at": "2025-12-02T10:30:00.000000Z"
+                }
             ]
         }
         """
@@ -276,7 +278,15 @@ class LaravelClient:
                 timeout=10
             )
             response.raise_for_status()
-            commands = response.json().get("commands", [])
+            
+            data = response.json()
+            
+            # Success-Feld prüfen (neue API)
+            if not data.get("success", True):
+                logger.warning(f"API returned success=false: {data.get('message', 'Unknown error')}")
+                return []
+            
+            commands = data.get("commands", [])
             
             if commands:
                 logger.info(f"Empfangene Befehle: {len(commands)}")
@@ -288,19 +298,21 @@ class LaravelClient:
             return []
     
     def report_command_result(self, command_id: str, success: bool, message: str = ""):
-        """Befehlsausführung an Laravel melden"""
+        """Befehlsausführung an Laravel melden (neue API-Struktur)"""
         try:
+            # Status basierend auf success bestimmen
+            status = "completed" if success else "failed"
+            
             response = self.session.post(
                 f"{self.base_url}/commands/{command_id}/result",
                 json={
-                    "success": success,
-                    "message": message,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
+                    "status": status,
+                    "result_message": message
                 },
                 timeout=10
             )
             response.raise_for_status()
-            logger.info(f"Befehlsergebnis gemeldet: {command_id} -> {'Erfolg' if success else 'Fehler'}")
+            logger.info(f"Befehlsergebnis gemeldet: {command_id} -> {status}")
             
         except Exception as e:
             logger.error(f"Fehler beim Melden des Ergebnisses für {command_id}: {e}")
@@ -558,42 +570,113 @@ class HardwareAgent:
             if response.status_code == 200:
                 logger.info("✅ Laravel-Backend erreichbar und Auth erfolgreich")
             elif response.status_code == 404:
-                logger.error("❌ Laravel-Route nicht gefunden (404)")
-                logger.error(f"URL: {self.laravel.base_url}/commands/pending")
-                logger.error("Prüfe routes/api.php in Laravel: Route::prefix('growdash/agent')")
+                logger.error("")
+                logger.error("="*60)
+                logger.error("❌ Laravel-Backend nicht vollständig eingerichtet!")
+                logger.error("="*60)
+                logger.error("")
+                logger.error(f"Route nicht gefunden: {self.laravel.base_url}/commands/pending")
+                logger.error("")
+                logger.error("Das Backend muss erst konfiguriert werden:")
+                logger.error("  → Siehe LARAVEL_IMPLEMENTATION.md")
+                logger.error("")
+                logger.error("Credentials werden zurückgesetzt...")
+                self._clear_credentials()
+                logger.error("")
+                logger.error("Nach Backend-Setup neu pairen:")
+                logger.error("  ./setup.sh")
+                logger.error("")
+                sys.exit(1)
             elif response.status_code in [401, 403]:
-                logger.error("❌ Auth fehlgeschlagen (401/403)")
-                logger.error("Device-Token oder Public-ID stimmen nicht mit Laravel-DB überein")
+                logger.error("")
+                logger.error("="*60)
+                logger.error("❌ Device-Authentifizierung fehlgeschlagen!")
+                logger.error("="*60)
+                logger.error("")
+                logger.error("Token ungültig oder Device in Laravel-DB gelöscht")
                 logger.error(f"Device-ID: {self.config.device_public_id}")
+                logger.error("")
+                logger.error("Credentials werden zurückgesetzt...")
+                self._clear_credentials()
+                logger.error("")
+                logger.error("Bitte neu pairen:")
+                logger.error("  ./setup.sh")
+                logger.error("")
+                sys.exit(1)
             else:
                 logger.warning(f"⚠️ Unerwarteter Status-Code: {response.status_code}")
                 
         except requests.exceptions.ConnectionError:
-            logger.error("❌ Verbindung zu Laravel fehlgeschlagen")
+            logger.error("")
+            logger.error("="*60)
+            logger.error("❌ Keine Verbindung zum Laravel-Backend")
+            logger.error("="*60)
+            logger.error("")
             logger.error(f"URL: {self.config.laravel_base_url}")
-            logger.error("Ist Laravel erreichbar? Netzwerk prüfen!")
+            logger.error("")
+            logger.error("Mögliche Ursachen:")
+            logger.error("  • Backend ist offline")
+            logger.error("  • Netzwerkproblem")
+            logger.error("  • Falsche LARAVEL_BASE_URL in .env")
+            logger.error("")
+            logger.error("Prüfe Backend-Erreichbarkeit:")
+            logger.error(f"  curl -I {self.config.laravel_base_url}")
+            logger.error("")
+            sys.exit(1)
         except Exception as e:
             logger.error(f"❌ Health-Check fehlgeschlagen: {e}")
+            sys.exit(1)
+    
+    def _clear_credentials(self):
+        """Lösche Device-Credentials aus .env bei Backend-Problemen"""
+        env_file = Path(".env")
+        if not env_file.exists():
+            return
+        
+        try:
+            with open(env_file, 'r') as f:
+                lines = f.readlines()
+            
+            with open(env_file, 'w') as f:
+                for line in lines:
+                    if line.startswith("DEVICE_PUBLIC_ID="):
+                        f.write("DEVICE_PUBLIC_ID=\n")
+                    elif line.startswith("DEVICE_TOKEN="):
+                        f.write("DEVICE_TOKEN=\n")
+                    else:
+                        f.write(line)
+            
+            logger.info("✅ Credentials aus .env entfernt")
+        except Exception as e:
+            logger.error(f"Fehler beim Löschen der Credentials: {e}")
     
     def execute_command(self, command: Dict) -> tuple[bool, str]:
         """
         Befehl ausführen und in Arduino-Befehle übersetzen.
         
         Unterstützte Befehle:
-        - spray_on: Spray aktivieren (optional: duration in Sekunden)
-        - spray_off: Spray deaktivieren
-        - fill_start: Füllen starten (optional: target_liters)
-        - fill_stop: Füllen stoppen
-        - request_status: Status abfragen
-        - request_tds: TDS-Messung anfordern
+        - serial_command: Direkter Serial-Befehl ans Arduino (params.command)
         - firmware_update: Firmware flashen (nur erlaubte Module)
+        
+        Legacy-Befehle (für Kompatibilität):
+        - spray_on, spray_off, fill_start, fill_stop, request_status, request_tds
         """
         cmd_type = command.get("type", "")
         params = command.get("params", {})
         
         try:
-            # Spray-Befehle
-            if cmd_type == "spray_on":
+            # Haupt-Befehlstyp: serial_command (neue Laravel-API)
+            if cmd_type == "serial_command":
+                arduino_command = params.get("command", "")
+                if not arduino_command:
+                    return False, "Kein command in params angegeben"
+                
+                # Direkt an Arduino senden
+                self.serial.send_command(arduino_command)
+                return True, f"Command '{arduino_command}' sent to Arduino"
+            
+            # Legacy: Spray-Befehle
+            elif cmd_type == "spray_on":
                 duration = params.get("duration", 0)
                 if duration > 0:
                     self.serial.send_command(f"Spray {int(duration * 1000)}")  # ms
@@ -606,7 +689,7 @@ class HardwareAgent:
                 self.serial.send_command("SprayOff")
                 return True, "Spray deaktiviert"
             
-            # Füll-Befehle
+            # Legacy: Füll-Befehle
             elif cmd_type == "fill_start":
                 target_liters = params.get("target_liters", 5.0)
                 self.serial.send_command(f"FillL {target_liters}")
@@ -616,7 +699,7 @@ class HardwareAgent:
                 self.serial.send_command("CancelFill")
                 return True, "Füllen gestoppt"
             
-            # Status-Abfragen
+            # Legacy: Status-Abfragen
             elif cmd_type == "request_status":
                 self.serial.send_command("Status")
                 return True, "Status angefordert"
@@ -675,10 +758,17 @@ class HardwareAgent:
                 
                 for cmd in commands:
                     cmd_id = cmd.get("id")
-                    logger.info(f"Führe Befehl aus: {cmd.get('type')}")
+                    cmd_type = cmd.get("type")
                     
+                    logger.info(f"Führe Befehl aus: {cmd_type}")
+                    
+                    # Optional: Command als 'executing' markieren (vor Ausführung)
+                    # Aktuell nicht implementiert, da Laravel-API das nicht erwartet
+                    
+                    # Befehl ausführen
                     success, message = self.execute_command(cmd)
                     
+                    # Ergebnis melden
                     if cmd_id:
                         self.laravel.report_command_result(cmd_id, success, message)
                 
