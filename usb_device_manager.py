@@ -21,16 +21,28 @@ class USBDeviceInfo:
     vendor_id: Optional[str] = None
     product_id: Optional[str] = None
     description: Optional[str] = None
+    board_type: str = "generic_serial"  # arduino_nano, arduino_uno, esp32, generic_serial
 
 
 class USBScanner:
     """Scannt verfügbare USB-Ports und erkennt Arduino-Devices"""
     
+    # Bekannte VID/PID Mappings für Board-Erkennung
+    KNOWN_BOARDS = {
+        ("2341", "0043"): "arduino_uno",     # Arduino Uno
+        ("2341", "0001"): "arduino_uno",     # Arduino Uno (alternative)
+        ("1a86", "7523"): "arduino_nano",    # CH340 (oft Nano Clone)
+        ("0403", "6001"): "arduino_nano",    # FTDI (oft Nano)
+        ("10c4", "ea60"): "esp32",           # CP2102 (oft ESP32)
+        ("1a86", "55d4"): "esp32",           # CH9102 (ESP32)
+    }
+    
     @staticmethod
     def scan_ports() -> List[USBDeviceInfo]:
         """
         Scannt alle verfügbaren seriellen Ports.
-        Verwendet pyserial's list_ports für Portdetails.
+        Akzeptiert ALLE /dev/ttyACM* und /dev/ttyUSB* (Linux) bzw. COM* (Windows).
+        Keywords werden nur für Klassifikations-Hints verwendet.
         """
         try:
             import serial.tools.list_ports as list_ports
@@ -39,16 +51,40 @@ class USBScanner:
             ports = list_ports.comports()
             
             for port in ports:
-                # Nur Arduino/USB-Serial-Devices
-                if any(keyword in (port.description or "").lower() for keyword in ["arduino", "usb", "serial", "ch340", "ftdi"]):
-                    device_info = USBDeviceInfo(
-                        port=port.device,
-                        vendor_id=f"{port.vid:04x}" if port.vid else None,
-                        product_id=f"{port.pid:04x}" if port.pid else None,
-                        description=port.description
-                    )
-                    devices.append(device_info)
-                    logger.debug(f"Erkanntes Device: {port.device} - {port.description}")
+                # Alle ttyACM*, ttyUSB* (Linux) oder COM* (Windows) akzeptieren
+                port_name = port.device.lower()
+                is_serial_device = (
+                    "ttyacm" in port_name or 
+                    "ttyusb" in port_name or 
+                    "com" in port_name
+                )
+                
+                if not is_serial_device:
+                    continue
+                
+                # VID/PID extrahieren
+                vendor_id = f"{port.vid:04x}" if port.vid else None
+                product_id = f"{port.pid:04x}" if port.pid else None
+                
+                # Board-Typ klassifizieren
+                board_type = USBScanner._classify_board(
+                    vendor_id, 
+                    product_id, 
+                    port.description or ""
+                )
+                
+                device_info = USBDeviceInfo(
+                    port=port.device,
+                    vendor_id=vendor_id,
+                    product_id=product_id,
+                    description=port.description,
+                    board_type=board_type
+                )
+                devices.append(device_info)
+                logger.debug(
+                    f"Erkanntes Device: {port.device} - {port.description} "
+                    f"(VID:PID={vendor_id}:{product_id}, Type={board_type})"
+                )
             
             return devices
             
@@ -58,6 +94,80 @@ class USBScanner:
         except Exception as e:
             logger.error(f"Fehler beim USB-Scan: {e}")
             return []
+    
+    @staticmethod
+    def _classify_board(vendor_id: Optional[str], product_id: Optional[str], description: str) -> str:
+        """
+        Klassifiziert Board-Typ basierend auf VID/PID und Description.
+        
+        Returns:
+            Board-Typ als String: arduino_nano, arduino_uno, esp32, oder generic_serial
+        """
+        # Prüfe bekannte VID/PID Kombinationen
+        if vendor_id and product_id:
+            board_type = USBScanner.KNOWN_BOARDS.get((vendor_id, product_id))
+            if board_type:
+                return board_type
+        
+        # Fallback: Klassifikation über Description-Keywords (nur Hints!)
+        desc_lower = description.lower()
+        
+        if "arduino" in desc_lower:
+            if "uno" in desc_lower:
+                return "arduino_uno"
+            elif "nano" in desc_lower:
+                return "arduino_nano"
+            else:
+                return "arduino_uno"  # Default Arduino
+        
+        if "esp32" in desc_lower or "esp-32" in desc_lower:
+            return "esp32"
+        
+        # Alles andere: generic_serial
+        return "generic_serial"
+    
+    @staticmethod
+    def try_handshake(port: str, baud: int = 9600, timeout: float = 3.0) -> bool:
+        """
+        Versucht einen einfachen Handshake mit dem Device.
+        Sendet "Status" Befehl und prüft ob eine Antwort kommt.
+        
+        Args:
+            port: Serial Port
+            baud: Baud Rate
+            timeout: Timeout in Sekunden
+            
+        Returns:
+            True wenn Device antwortet, False sonst
+        """
+        try:
+            import serial
+            
+            ser = serial.Serial(port, baud, timeout=1.0)
+            time.sleep(2)  # Warte auf Arduino Reset
+            
+            # Sende Status-Anfrage
+            ser.write(b"Status\n")
+            ser.flush()
+            
+            # Warte auf Antwort
+            start_time = time.time()
+            while (time.time() - start_time) < timeout:
+                if ser.in_waiting:
+                    response = ser.readline().decode('utf-8', errors='ignore').strip()
+                    if response:
+                        logger.debug(f"Handshake erfolgreich auf {port}: {response}")
+                        ser.close()
+                        return True
+                time.sleep(0.1)
+            
+            ser.close()
+            logger.debug(f"Handshake fehlgeschlagen auf {port} (kein Response)")
+            return False
+            
+        except Exception as e:
+            logger.debug(f"Handshake fehlgeschlagen auf {port}: {e}")
+            return False
 
 
 class DeviceInstance:
@@ -66,16 +176,18 @@ class DeviceInstance:
     Verwaltet SerialProtocol, LaravelClient und HardwareAgent.
     """
     
-    def __init__(self, port: str, config_template, device_id: str):
+    def __init__(self, port: str, config_template, device_id: str, device_info: Optional[USBDeviceInfo] = None):
         """
         Args:
             port: USB-Port (z.B. /dev/ttyACM0)
             config_template: AgentConfig-Objekt als Template
             device_id: Eindeutige ID für dieses Device
+            device_info: Optional USBDeviceInfo mit Hardware-Details
         """
         self.port = port
         self.device_id = device_id
         self.config_template = config_template
+        self.device_info = device_info
         
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -118,8 +230,11 @@ class DeviceInstance:
                 device_token=self.config_template.device_token
             )
             
-            # Starte HardwareAgent für dieses Device
-            self._agent = HardwareAgent(config_override=device_config)
+            # Starte HardwareAgent für dieses Device mit device_info
+            self._agent = HardwareAgent(
+                config_override=device_config,
+                device_info=self.device_info
+            )
             
             logger.info(f"🚀 Agent läuft für Device {self.device_id} auf {self.port}")
             
@@ -224,12 +339,16 @@ class USBDeviceManager:
                 # Neues Device gefunden
                 device_id = self._generate_device_id(device_info)
                 
-                logger.info(f"🆕 Neues Device erkannt: {port} → {device_id}")
+                logger.info(
+                    f"🆕 Neues Device erkannt: {port} → {device_id} "
+                    f"(Type: {device_info.board_type})"
+                )
                 
                 device_instance = DeviceInstance(
                     port=port,
                     config_template=self.config_template,
-                    device_id=device_id
+                    device_id=device_id,
+                    device_info=device_info
                 )
                 
                 self._devices[port] = device_instance

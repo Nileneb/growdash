@@ -529,19 +529,29 @@ class LaravelClient:
         except Exception:
             pass
     
-    def send_heartbeat(self, last_state: Optional[Dict] = None) -> bool:
+    def send_heartbeat(self, last_state: Optional[Dict] = None, device_info=None) -> bool:
         """
         Heartbeat an Laravel senden (alle 30-60 Sekunden).
         Hält Device-Status auf "online" und aktualisiert last_seen_at.
         
         Args:
             last_state: Optional dict mit Systemstatus (uptime, memory, etc.)
+            device_info: Optional USBDeviceInfo mit Hardware-Details
             
         Returns:
             True wenn erfolgreich, False bei Fehler
         """
         try:
-            payload = {"last_state": last_state} if last_state else None
+            payload = {"last_state": last_state} if last_state else {}
+            
+            # Hardware-Info hinzufügen wenn verfügbar
+            if device_info:
+                payload["board_type"] = device_info.board_type
+                payload["port"] = device_info.port
+                payload["vendor_id"] = device_info.vendor_id
+                payload["product_id"] = device_info.product_id
+                payload["description"] = device_info.description
+            
             response = self.session.post(
                 f"{self.base_url}/heartbeat",
                 json=payload,
@@ -558,12 +568,22 @@ class LaravelClient:
             logger.error(f"Heartbeat-Fehler: {e}")
             return False
 
-    def send_capabilities(self, caps: Dict[str, Any]) -> bool:
+    def send_capabilities(self, caps: Dict[str, Any], device_info=None) -> bool:
         """Capabilities an Backend senden"""
         try:
+            payload = {"capabilities": caps}
+            
+            # Hardware-Info hinzufügen wenn verfügbar
+            if device_info:
+                payload["board_type"] = device_info.board_type
+                payload["port"] = device_info.port
+                payload["vendor_id"] = device_info.vendor_id
+                payload["product_id"] = device_info.product_id
+                payload["description"] = device_info.description
+            
             r = self.session.post(
                 f"{self.base_url}/capabilities",
-                json={"capabilities": caps},
+                json=payload,
                 timeout=10,
             )
             if r.status_code >= 400:
@@ -755,8 +775,9 @@ class HardwareAgent:
     Verwaltet Serial-Kommunikation, Telemetrie und Befehls-Polling.
     """
     
-    def __init__(self, config_override=None):
+    def __init__(self, config_override=None, device_info=None):
         self.config = config_override if config_override else AgentConfig()
+        self.device_info = device_info  # Optional USBDeviceInfo
         self.serial = SerialProtocol(self.config.serial_port, self.config.baud_rate)
         self.laravel = LaravelClient(self.config)
         self.firmware_mgr = FirmwareManager(self.config)
@@ -773,7 +794,7 @@ class HardwareAgent:
         try:
             caps = self._detect_capabilities()
             if caps:
-                self.laravel.send_capabilities(caps)
+                self.laravel.send_capabilities(caps, self.device_info)
         except Exception:
             pass
     
@@ -1121,7 +1142,7 @@ class HardwareAgent:
                     "python_version": platform.python_version(),
                     "platform": platform.system().lower(),
                 }
-                success = self.laravel.send_heartbeat(last_state)
+                success = self.laravel.send_heartbeat(last_state, self.device_info)
                 
                 if success:
                     logger.debug(f"✅ Heartbeat gesendet (uptime={uptime}s)")
