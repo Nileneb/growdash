@@ -27,6 +27,40 @@ cd growdash
 - ✅ **Board Detection** - Automatische Erkennung von Arduino Uno, Mega, ESP32, etc.
 - ✅ **Firmware Updates** - Sichere Arduino-Firmware-Updates via arduino-cli
 - ✅ **Log Batching** - Sendet Logs periodisch ans Backend
+- ✅ **Multi-Device Support** - Automatisches Scannen und Verwalten mehrerer USB-Devices
+
+## 🔌 Multi-Device Modus
+
+Der Agent kann **mehrere Arduino-Devices gleichzeitig** verwalten:
+
+```bash
+# Multi-Device-Modus aktivieren in .env
+MULTI_DEVICE_MODE=true
+USB_SCAN_INTERVAL=12000  # Scan alle 12000s (3.33h)
+
+# Agent im Multi-Device-Modus starten
+./grow_start.sh
+```
+
+### Funktionsweise
+
+1. **Automatischer USB-Scan**
+   - Beim Start: Sofortiger Scan aller verfügbaren USB-Ports
+   - Periodisch: Alle 12000 Sekunden (konfigurierbar)
+   
+2. **Device-Erkennung**
+   - Erkennt Arduino/USB-Serial-Devices automatisch
+   - Jedes Device erhält eindeutige ID: `growdash-{vendor_id}-{product_id}-{port}`
+   
+3. **Separate Device-Instanzen**
+   - Für jeden erkannten Port wird ein eigener Thread gestartet
+   - Jedes Device hat separate SerialProtocol, LaravelClient, HardwareAgent
+   
+4. **Hot-Plug Support**
+   - Neue Devices: Werden automatisch erkannt und gestartet
+   - Getrennte Devices: Thread wird sauber beendet, Device aus Laravel abgemeldet
+
+📖 **Detaillierte Dokumentation:** [docs/MULTI_DEVICE.md](docs/MULTI_DEVICE.md)
 
 ## 🔧 Systemanforderungen
 
@@ -39,24 +73,27 @@ cd growdash
 
 ```
 growdash/
-├── agent.py              # Haupt-Agent (Serial, Telemetrie, Commands)
-├── bootstrap.py          # Onboarding-Wizard (standalone)
-├── pairing.py            # Pairing-Flow-Implementierung
-├── local_api.py          # Debug-API (optional, localhost)
-├── setup.sh              # Ersteinrichtung (venv + Onboarding)
-├── grow_start.sh         # Agent-Starter (Production)
-├── requirements.txt      # Python-Dependencies
-├── .env.example          # Konfigurationsvorlage
-├── docs/                 # Detaillierte Dokumentation
+├── agent.py                    # Haupt-Agent (Serial, Telemetrie, Commands)
+├── usb_device_manager.py       # Multi-Device USB-Scanner
+├── bootstrap.py                # Onboarding-Wizard (standalone)
+├── pairing.py                  # Pairing-Flow-Implementierung
+├── local_api.py                # Debug-API (optional, localhost)
+├── setup.sh                    # Ersteinrichtung (venv + Onboarding)
+├── grow_start.sh               # Agent-Starter (Production)
+├── requirements.txt            # Python-Dependencies
+├── .env.example                # Konfigurationsvorlage
+├── docs/                       # Detaillierte Dokumentation
+│   ├── MULTI_DEVICE.md         # Multi-Device Support
 │   ├── LARAVEL_IMPLEMENTATION.md
 │   ├── AGENT_API_UPDATE.md
 │   ├── ONBOARDING_MODES.md
 │   └── ...
-├── scripts/              # Utility-Scripts
+├── scripts/                    # Utility-Scripts
+│   ├── test_multi_device.sh    # Test Multi-Device-Scanner
 │   ├── test_heartbeat.sh
 │   ├── install_arduino_cli.sh
 │   └── install.sh
-└── firmware/             # Arduino-Firmware (.ino Dateien)
+└── firmware/                   # Arduino-Firmware (.ino Dateien)
 ```
 
 ## 🔐 Konfiguration (.env)
@@ -81,6 +118,10 @@ BAUD_RATE=9600
 TELEMETRY_INTERVAL=10       # Sekunden
 COMMAND_POLL_INTERVAL=5     # Sekunden
 
+# Multi-Device Support
+MULTI_DEVICE_MODE=false     # true = Multi-Device, false = Single-Device
+USB_SCAN_INTERVAL=12000     # USB-Scan alle 12000s (nur bei MULTI_DEVICE_MODE=true)
+
 # Arduino-CLI (für Firmware-Updates)
 ARDUINO_CLI_PATH=/usr/local/bin/arduino-cli
 FIRMWARE_DIR=./firmware
@@ -91,155 +132,207 @@ LOCAL_API_HOST=127.0.0.1
 LOCAL_API_PORT=8000
 ```
 
-## 🎯 Onboarding-Modi
+## 🎯 Onboarding Modi
 
-### 1. Pairing-Code (Empfohlen)
-Agent generiert 6-stelligen Code → Eingabe in Web-UI → Device wird verknüpft.
+### 1. PAIRING (Empfohlen)
 
-```bash
-./setup.sh  # Wähle Option 1
-# Code wird angezeigt, z.B. "XY42Z7"
-# Im Browser: https://grow.linn.games/devices/pair → Code eingeben
-```
-
-### 2. Direct Login (Advanced)
-Login mit Email + Passwort → Device wird automatisch registriert.
+Agent zeigt Pairing-Code an, User gibt Code im Laravel-Frontend ein:
 
 ```bash
-./setup.sh  # Wähle Option 2
-# Email: user@example.com
-# Passwort: ***
+ONBOARDING_MODE=PAIRING
+./setup.sh
+# → Zeigt 6-stelligen Code an
+# → In Laravel-Frontend eingeben
 ```
 
-### 3. Preconfigured
-Manuelle Konfiguration via `.env` (für Experten).
+### 2. DIRECT_LOGIN
 
-## 📡 Agent-API Endpoints
+Agent meldet sich mit User-Credentials an:
 
-Der Agent kommuniziert mit folgenden Laravel-Endpoints:
+```bash
+ONBOARDING_MODE=DIRECT_LOGIN
+./setup.sh
+# → Email und Passwort eingeben
+```
+
+### 3. PRECONFIGURED
+
+Credentials sind bereits in `.env` vorhanden (z.B. vorkonfigurierte SD-Card):
+
+```bash
+ONBOARDING_MODE=PRECONFIGURED
+DEVICE_PUBLIC_ID=growdash-001
+DEVICE_TOKEN=xxx
+```
+
+📖 **Details:** [docs/ONBOARDING_MODES.md](docs/ONBOARDING_MODES.md)
+
+## 📡 API Endpoints
+
+Agent kommuniziert mit Laravel-Backend:
 
 | Endpoint | Methode | Beschreibung |
 |----------|---------|--------------|
-| `/heartbeat` | POST | Device-Status auf "online" halten |
-| `/telemetry` | POST | Sensor-Daten senden |
-| `/commands/pending` | GET | Befehle abrufen |
-| `/commands/{id}/result` | POST | Befehlsergebnis melden |
-| `/capabilities` | POST | Board-Info senden |
-| `/logs` | POST | Log-Batch senden |
+| `/commands/pending` | GET | Holt ausstehende Commands |
+| `/commands/{id}/result` | POST | Meldet Command-Ergebnis |
+| `/telemetry` | POST | Sendet Sensor-Daten |
+| `/heartbeat` | POST | Meldet "online" Status |
+| `/capabilities` | POST | Sendet Board/Sensor-Info |
+| `/logs` | POST | Sendet Log-Batch |
 
-Details: `docs/LARAVEL_IMPLEMENTATION.md`
+📖 **Details:** [docs/LARAVEL_ENDPOINTS.md](docs/LARAVEL_ENDPOINTS.md)
 
-## 🔌 Serial Commands
+## 🎮 Serial Commands
 
-Der Agent unterstützt **direkte Arduino-Befehle** und wartet auf Antworten:
+Agent sendet Commands an Arduino und wartet auf Response:
 
-```json
-// Backend sendet:
-{
-  "type": "serial_command",
-  "params": {
-    "command": "STATUS"
-  }
-}
+| Command | Arduino-Antwort | Beschreibung |
+|---------|-----------------|--------------|
+| `status` | `dist_cm=20.3 liters=33.53 Tab=OFF...` | Kompletter Status |
+| `TDS` | `TDS=660 TempC=22.50 ADC=351 V=1.714` | TDS-Sensor |
+| `Spray 120000` | (Timeout nach 5s) | Sprühe 120s |
+| `Fill 60000` | (Timeout nach 5s) | Fülle 60s |
 
-// Agent führt aus:
-1. Sendet "STATUS\n" an Arduino
-2. Wartet auf Antwort (5s timeout)
-3. Arduino antwortet: "WaterLevel: 75, Pump: OFF"
-4. Meldet zurück: { "status": "completed", "result_message": "Arduino: WaterLevel: 75, Pump: OFF" }
-```
-
-Unterstützte Legacy-Commands:
-- `spray_on`, `spray_off`, `fill_start`, `fill_stop`
-- `request_status`, `request_tds`
-- `firmware_update` (sichere Kapselung)
+**Wichtig:** Actuator-Commands (Spray, Fill) laufen länger als 5s → Timeout ist normal.
 
 ## 🛠️ Development
 
-### Lokale Debug-API starten
-```bash
-python local_api.py
-# Erreichbar auf http://localhost:8000
-# Endpoints: /config, /telemetry, /status, /firmware/flash
-```
+### Setup
 
-### Dependencies installieren
 ```bash
+# 1. Repo klonen
+git clone https://github.com/Nileneb/growdash.git
+cd growdash
+
+# 2. Virtual Environment
 python3 -m venv venv
 source venv/bin/activate
+
+# 3. Dependencies
 pip install -r requirements.txt
+
+# 4. .env kopieren
+cp .env.example .env
+# → LARAVEL_BASE_URL, DEVICE_PUBLIC_ID, DEVICE_TOKEN anpassen
+```
+
+### Lokale API (Debug)
+
+```bash
+# Local API starten (Port 8000)
+python3 local_api.py
+
+# Agent mit Local API testen
+# .env:
+LOCAL_API_ENABLED=true
+LARAVEL_BASE_URL=http://127.0.0.1:8000
+
+# Agent starten
+python3 agent.py
 ```
 
 ### Tests
+
 ```bash
 # Heartbeat testen
 ./scripts/test_heartbeat.sh
 
-# Arduino-CLI installieren
-./scripts/install_arduino_cli.sh
+# Multi-Device testen
+./scripts/test_multi_device.sh
+
+# Serial-Verbindung testen
+python3 -c "import serial; s=serial.Serial('/dev/ttyACM0', 9600); print(s.read(100))"
 ```
 
 ## 🐛 Troubleshooting
 
-### Agent startet nicht
+### 1. Serial-Port Permission Denied
+
 ```bash
-# Prüfe .env
-cat .env | grep DEVICE
+# User zu dialout-Gruppe hinzufügen
+sudo usermod -a -G dialout $USER
 
-# Prüfe Serial-Port
-ls -la /dev/ttyACM* /dev/ttyUSB*
-
-# Logs anzeigen
-python agent.py  # Siehe stdout
+# Neuanmeldung erforderlich
+logout
 ```
 
-### Backend-Verbindung fehlschlägt
-```bash
-# Prüfe Backend-Erreichbarkeit
-curl -I https://grow.linn.games
+### 2. Laravel-Backend 404
 
-# Prüfe Credentials
-# Bei 401/403: Credentials werden automatisch zurückgesetzt
-# Neu pairen mit: ./setup.sh
+```bash
+# Backend nicht vollständig eingerichtet
+# → Siehe docs/LARAVEL_IMPLEMENTATION.md
+# → Routes /api/growdash/agent/* müssen existieren
 ```
 
-### Commands werden nicht ausgeführt
+### 3. Device-Auth 401
+
 ```bash
-# Prüfe Command-Logs
-# Agent loggt: "Empfangene Befehle: X"
-# Prüfe Serial-Verbindung: "Befehl an Arduino (mit Response): ..."
-# Prüfe Arduino-Antwort: "Arduino Antwort: ..."
+# Token ungültig oder Device gelöscht
+# → Credentials zurücksetzen:
+rm .env
+./setup.sh  # Neu pairen
 ```
 
-### Capabilities 422 Error
+### 4. Arduino nicht erkannt
+
 ```bash
-# Agent loggt jetzt Response-Body
-# Prüfe welche Felder Laravel erwartet
-# Passe payload in LaravelClient.send_capabilities() an
+# USB-Verbindung prüfen
+lsusb
+
+# Serial-Ports prüfen
+ls -l /dev/tty*
+
+# Permissions prüfen
+groups $USER  # sollte "dialout" enthalten
 ```
 
-## 📚 Weiterführende Dokumentation
+### 5. Multi-Device: Keine Devices erkannt
 
-- **Laravel Backend Setup:** `docs/LARAVEL_IMPLEMENTATION.md`
-- **Agent-API Details:** `docs/AGENT_API_UPDATE.md`
-- **Onboarding-Modi:** `docs/ONBOARDING_MODES.md`
-- **Pairing-Flow:** `docs/PAIRING_FLOW.md`
-- **Quickstart:** `docs/QUICKSTART.md`
+```bash
+# pyserial prüfen
+pip list | grep pyserial
+
+# USB-Scanner testen
+./scripts/test_multi_device.sh
+
+# Manuelle Prüfung
+python3 -c "from usb_device_manager import USBScanner; print(USBScanner.scan_ports())"
+```
+
+## 📚 Dokumentation
+
+- **[MULTI_DEVICE.md](docs/MULTI_DEVICE.md)** - Multi-Device Support (USB-Scanner, Hot-Plug)
+- **[LARAVEL_IMPLEMENTATION.md](docs/LARAVEL_IMPLEMENTATION.md)** - Laravel Backend-Integration
+- **[AGENT_API_UPDATE.md](docs/AGENT_API_UPDATE.md)** - API Alignment mit Agent Integration Guide
+- **[ONBOARDING_MODES.md](docs/ONBOARDING_MODES.md)** - Pairing, Direct-Login, Pre-configured
+- **[PAIRING_FLOW.md](docs/PAIRING_FLOW.md)** - Detaillierter Pairing-Ablauf
+- **[LARAVEL_ENDPOINTS.md](docs/LARAVEL_ENDPOINTS.md)** - Alle API-Endpoints
+- **[QUICKSTART.md](docs/QUICKSTART.md)** - Schnelleinstieg
+- **[SETUP.md](docs/SETUP.md)** - Detaillierte Setup-Anleitung
 
 ## 🤝 Contributing
 
-Pull Requests willkommen! Bitte erstelle Issues für Bugs oder Feature-Requests.
+Contributions sind willkommen! Bitte:
 
-## 📄 Lizenz
+1. Fork das Repository
+2. Erstelle Feature Branch (`git checkout -b feature/AmazingFeature`)
+3. Commit Changes (`git commit -m 'Add AmazingFeature'`)
+4. Push zum Branch (`git push origin feature/AmazingFeature`)
+5. Öffne Pull Request
 
-MIT License - siehe LICENSE-Datei
+## 📝 License
 
-## 👤 Autor
+Dieses Projekt ist unter der MIT-Lizenz lizenziert.
 
-Entwickelt für automatisierte Growbox-Steuerung mit Arduino + Raspberry Pi + Laravel Backend.
+## 👨‍💻 Author
+
+**Nileneb**
+
+- GitHub: [@Nileneb](https://github.com/Nileneb)
+- Projekt: [GrowDash](https://github.com/Nileneb/growdash)
 
 ---
 
-**Status:** ✅ Production Ready  
-**Version:** 1.0.0  
-**Letzte Aktualisierung:** 2. Dezember 2025
+**Status:** ✅ Production-Ready  
+**Letzte Aktualisierung:** 2. Dezember 2025  
+**Version:** 2.0.0 (Multi-Device Support)

@@ -755,8 +755,8 @@ class HardwareAgent:
     Verwaltet Serial-Kommunikation, Telemetrie und Befehls-Polling.
     """
     
-    def __init__(self):
-        self.config = AgentConfig()
+    def __init__(self, config_override=None):
+        self.config = config_override if config_override else AgentConfig()
         self.serial = SerialProtocol(self.config.serial_port, self.config.baud_rate)
         self.laravel = LaravelClient(self.config)
         self.firmware_mgr = FirmwareManager(self.config)
@@ -1199,9 +1199,58 @@ def _install_log_handler(buffer: deque):
     logging.getLogger().addHandler(handler)
 
 
+def run_multi_device():
+    """
+    Startet Agent im Multi-Device-Modus.
+    Scannt USB-Ports und verwaltet mehrere Device-Instanzen.
+    """
+    from usb_device_manager import USBDeviceManager
+    
+    # Lade Basis-Config
+    config = AgentConfig()
+    
+    # Scan-Intervall aus .env oder default 12000s (3.33h)
+    scan_interval = int(os.getenv('USB_SCAN_INTERVAL', '12000'))
+    
+    logger.info("")
+    logger.info("="*60)
+    logger.info("🔌 GrowDash Multi-Device Manager")
+    logger.info("="*60)
+    logger.info(f"USB-Scan: beim Start + alle {scan_interval}s")
+    logger.info("")
+    
+    # Starte USB Device Manager
+    manager = USBDeviceManager(
+        config_template=config,
+        scan_interval=scan_interval
+    )
+    manager.start()
+    
+    try:
+        while True:
+            time.sleep(10)
+            # Status-Log alle 10s (optional reduzieren)
+            active = manager.get_device_count()
+            if active > 0:
+                logger.debug(f"📊 Multi-Device Status: {active} aktive Devices")
+    
+    except KeyboardInterrupt:
+        logger.info("\n🛑 Beende Multi-Device Manager...")
+        manager.stop()
+        logger.info("✅ Alle Devices gestoppt")
+
+
 if __name__ == "__main__":
-    # Log-Batching aktivieren
-    # Hinweis: Handler wird im Konstruktor gesetzt, nachdem Buffer existiert
-    agent = HardwareAgent()
-    _install_log_handler(agent._log_buffer)
-    agent.run()
+    # Prüfe ob Multi-Device-Modus aktiviert ist
+    multi_device_mode = os.getenv('MULTI_DEVICE_MODE', 'false').lower() == 'true'
+    
+    if multi_device_mode:
+        # Multi-Device-Modus: USB-Scanner verwaltet mehrere Devices
+        run_multi_device()
+    else:
+        # Single-Device-Modus (Legacy)
+        # Log-Batching aktivieren
+        # Hinweis: Handler wird im Konstruktor gesetzt, nachdem Buffer existiert
+        agent = HardwareAgent()
+        _install_log_handler(agent._log_buffer)
+        agent.run()
