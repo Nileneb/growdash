@@ -9,7 +9,7 @@ echo "================="
 echo ""
 
 # Virtual Environment aktivieren ODER erstellen
-if [ ! -d ".venv" ]; then
+if [ ! -d "venv" ]; then
     echo "📦 Erstelle Python Virtual Environment..."
     python3 -m venv venv
     source venv/bin/activate
