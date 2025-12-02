@@ -20,6 +20,7 @@ import threading
 import requests
 from pydantic_settings import BaseSettings
 from pydantic import Field
+from collections import deque
 
 # Logging konfigurieren
 logging.basicConfig(
@@ -34,7 +35,10 @@ class AgentConfig(BaseSettings):
     
     # Laravel Backend
     laravel_base_url: str = Field(default="http://localhost")
-    laravel_api_path: str = Field(default="/api/growdash")
+    # Agent-API Pfad (z. B. /api/growdash/agent)
+    laravel_api_path: str = Field(default="/api/growdash/agent")
+    # Onboarding Modus: PAIRING | DIRECT_LOGIN | PRECONFIGURED
+    onboarding_mode: str = Field(default="PAIRING")
     
     # Device Identifikation (Device-Token-Auth, kein User-Login)
     device_public_id: str = Field(default="growdash-001")
@@ -60,7 +64,6 @@ class AgentConfig(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = 'utf-8'
-        extra = 'ignore'  # Extra Keys in .env ignorieren
         extra = 'ignore'  # Extra Keys in .env ignorieren
 
 
@@ -124,14 +127,14 @@ class SerialProtocol:
         """
         try:
             telemetry = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "measured_at": datetime.now(timezone.utc).isoformat(),
                 "raw": line
             }
             
             # WaterLevel Status
             if "WaterLevel:" in line:
                 value = line.split(":")[-1].strip()
-                telemetry["sensor_id"] = "water_level"
+                telemetry["sensor_key"] = "water_level"
                 telemetry["value"] = float(value)
                 telemetry["unit"] = "percent"
                 
@@ -140,7 +143,7 @@ class SerialProtocol:
                 parts = line.split()
                 for part in parts:
                     if "TDS=" in part:
-                        telemetry["sensor_id"] = "tds"
+                        telemetry["sensor_key"] = "tds"
                         telemetry["value"] = float(part.split("=")[1])
                         telemetry["unit"] = "ppm"
                     elif "TempC=" in part:
@@ -148,8 +151,8 @@ class SerialProtocol:
                         if temp_val != "NaN":
                             # Separate Telemetrie für Temperatur
                             self.receive_queue.put({
-                                "timestamp": datetime.now(timezone.utc).isoformat(),
-                                "sensor_id": "temperature",
+                                "measured_at": datetime.now(timezone.utc).isoformat(),
+                                "sensor_key": "temperature",
                                 "value": float(temp_val),
                                 "unit": "celsius",
                                 "raw": line
@@ -157,20 +160,20 @@ class SerialProtocol:
             
             # Spray Status
             elif "Spray:" in line:
-                telemetry["sensor_id"] = "spray_status"
+                telemetry["sensor_key"] = "spray_status"
                 telemetry["value"] = 1 if "ON" in line else 0
                 telemetry["unit"] = "boolean"
                 
             # Fill/Tab Status
             elif "Tab:" in line:
-                telemetry["sensor_id"] = "fill_status"
+                telemetry["sensor_key"] = "fill_status"
                 telemetry["value"] = 1 if "ON" in line else 0
                 telemetry["unit"] = "boolean"
             
             # In Queue legen, wenn Sensor identifiziert wurde
-            if "sensor_id" in telemetry:
+            if "sensor_key" in telemetry:
                 self.receive_queue.put(telemetry)
-                logger.debug(f"Telemetrie geparst: {telemetry['sensor_id']} = {telemetry['value']}")
+                logger.debug(f"Telemetrie geparst: {telemetry['sensor_key']} = {telemetry['value']}")
             
         except Exception as e:
             logger.error(f"Fehler beim Parsen von '{line}': {e}")
@@ -227,11 +230,64 @@ class LaravelClient:
         self.session = requests.Session()
         
         # Device-Token-Auth in allen Requests
+        self.set_device_headers(config.device_public_id, config.device_token)
+
+    def set_device_headers(self, device_id: str, device_token: str):
+        """Headers für Device-Auth setzen/aktualisieren"""
         self.session.headers.update({
-            "X-Device-ID": config.device_public_id,
-            "X-Device-Token": config.device_token,
+            "X-Device-ID": device_id or "",
+            "X-Device-Token": device_token or "",
             "Content-Type": "application/json"
         })
+
+    # ---------- Onboarding / Auth Flows (außerhalb der Agent-API) ----------
+    def start_pairing_bootstrap(self) -> Optional[Dict[str, Any]]:
+        """/api/agents/bootstrap aufrufen und Bootstrap-Code erhalten"""
+        url = f"{self.config.laravel_base_url}/api/agents/bootstrap"
+        try:
+            r = requests.post(url, json={}, timeout=15)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            logger.error(f"Pairing-Bootstrap fehlgeschlagen: {e}")
+            return None
+
+    def poll_pairing_status(self, code: str) -> Optional[Dict[str, Any]]:
+        """/api/agents/pairing/status pollen bis Device + Token geliefert werden"""
+        url = f"{self.config.laravel_base_url}/api/agents/pairing/status"
+        try:
+            r = requests.get(url, params={"code": code}, timeout=10)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            logger.error(f"Pairing-Status-Abfrage fehlgeschlagen: {e}")
+            return None
+
+    def login_direct(self, email: str, password: str) -> Optional[str]:
+        """/api/auth/login → Sanctum/Bearer Token zurück"""
+        url = f"{self.config.laravel_base_url}/api/auth/login"
+        try:
+            r = requests.post(url, json={"email": email, "password": password}, timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            # Erwartet: { token: "..." } oder ähnliches
+            token = data.get("token") or data.get("access_token")
+            return token
+        except Exception as e:
+            logger.error(f"Login fehlgeschlagen: {e}")
+            return None
+
+    def register_device_from_agent(self, bearer_token: str) -> Optional[Dict[str, Any]]:
+        """/api/growdash/devices/register-from-agent → public_id + agent_token (PLAINTEXT)"""
+        url = f"{self.config.laravel_base_url}/api/growdash/devices/register-from-agent"
+        try:
+            headers = {"Authorization": f"Bearer {bearer_token}", "Content-Type": "application/json"}
+            r = requests.post(url, json={}, headers=headers, timeout=20)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            logger.error(f"Device-Registrierung fehlgeschlagen: {e}")
+            return None
     
     def send_telemetry(self, data: List[Dict]) -> bool:
         """Telemetrie-Batch an Laravel senden"""
@@ -241,10 +297,7 @@ class LaravelClient:
         try:
             response = self.session.post(
                 f"{self.base_url}/telemetry",
-                json={
-                    "device_id": self.config.device_public_id,
-                    "readings": data
-                },
+                json={"readings": data},
                 timeout=10
             )
             response.raise_for_status()
@@ -323,15 +376,31 @@ class LaravelClient:
             self.session.post(
                 f"{self.base_url}/logs",
                 json={
-                    "device_id": self.config.device_public_id,
-                    "level": level,
-                    "message": message,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
+                    "logs": [
+                        {
+                            "level": level,
+                            "message": message,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        }
+                    ]
                 },
-                timeout=5
+                timeout=5,
             )
         except Exception:
             pass  # Logs sind nicht kritisch
+
+    def send_logs_batch(self, items: List[Dict[str, Any]]):
+        """Mehrere Logs in einem Request senden"""
+        if not items:
+            return
+        try:
+            self.session.post(
+                f"{self.base_url}/logs",
+                json={"logs": items},
+                timeout=8,
+            )
+        except Exception:
+            pass
     
     def send_heartbeat(self, last_state: Optional[Dict] = None) -> bool:
         """
@@ -345,13 +414,10 @@ class LaravelClient:
             True wenn erfolgreich, False bei Fehler
         """
         try:
-            payload = {}
-            if last_state:
-                payload["last_state"] = last_state
-            
+            # Gemäß neuer Spezifikation: ohne Payload senden
             response = self.session.post(
                 f"{self.base_url}/heartbeat",
-                json=payload if payload else None,
+                json=None,
                 timeout=5
             )
             
@@ -363,6 +429,20 @@ class LaravelClient:
                 
         except Exception as e:
             logger.error(f"Heartbeat-Fehler: {e}")
+            return False
+
+    def send_capabilities(self, caps: Dict[str, Any]) -> bool:
+        """Capabilities an Backend senden"""
+        try:
+            r = self.session.post(
+                f"{self.base_url}/capabilities",
+                json={"capabilities": caps},
+                timeout=10,
+            )
+            r.raise_for_status()
+            return True
+        except Exception as e:
+            logger.error(f"Capabilities-Übertragung fehlgeschlagen: {e}")
             return False
 
 
@@ -521,6 +601,21 @@ class FirmwareManager:
         except Exception as e:
             logger.error(f"Fehler beim Loggen des Flash-Events: {e}")
 
+    def _detect_board_name(self) -> str:
+        try:
+            # Versuch über arduino-cli board list
+            if os.path.exists(self.arduino_cli):
+                res = subprocess.run([self.arduino_cli, "board", "list"], capture_output=True, text=True, timeout=10)
+                out = (res.stdout or "") + "\n" + (res.stderr or "")
+                out = out.lower()
+                if "arduino uno" in out:
+                    return "arduino_uno"
+                if "esp32" in out:
+                    return "esp32"
+        except Exception:
+            pass
+        return "arduino_uno"
+
 
 class HardwareAgent:
     """
@@ -534,12 +629,21 @@ class HardwareAgent:
         self.laravel = LaravelClient(self.config)
         self.firmware_mgr = FirmwareManager(self.config)
         self._stop_event = threading.Event()
+        self._log_buffer = deque(maxlen=500)
         
         logger.info(f"Agent gestartet für Device: {self.config.device_public_id}")
         logger.info(f"Laravel Backend: {self.config.laravel_base_url}{self.config.laravel_api_path}")
         
         # Startup Health Check
         self._startup_health_check()
+        
+        # Capabilities beim Start melden (best effort)
+        try:
+            caps = self._detect_capabilities()
+            if caps:
+                self.laravel.send_capabilities(caps)
+        except Exception:
+            pass
     
     def _startup_health_check(self):
         """Startup-Health-Check: Verbindung zu Laravel testen"""
@@ -547,18 +651,11 @@ class HardwareAgent:
         
         # Device-Credentials prüfen
         if not self.config.device_public_id or not self.config.device_token:
-            logger.error("")
-            logger.error("="*60)
-            logger.error("❌ DEVICE_PUBLIC_ID oder DEVICE_TOKEN fehlt in .env!")
-            logger.error("="*60)
-            logger.error("")
-            logger.error("Bitte führe zuerst das Onboarding durch:")
-            logger.error("  python bootstrap.py")
-            logger.error("")
-            logger.error("Oder für Pairing-Code direkt:")
-            logger.error("  python pairing.py")
-            logger.error("")
-            sys.exit(1)
+            logger.info("Keine Credentials gefunden – starte Onboarding-Wizard...")
+            self._run_onboarding_wizard()
+            # Nach Onboarding Konfiguration neu laden
+            self.config = AgentConfig()
+            self.laravel.set_device_headers(self.config.device_public_id, self.config.device_token)
         
         # Laravel-Verbindung testen
         try:
@@ -625,6 +722,98 @@ class HardwareAgent:
             sys.exit(1)
         except Exception as e:
             logger.error(f"❌ Health-Check fehlgeschlagen: {e}")
+            sys.exit(1)
+
+    def _persist_credentials(self, device_id: str, token: str):
+        """Speichere Credentials in .env (idempotent)"""
+        env_file = Path(".env")
+        lines = []
+        if env_file.exists():
+            with open(env_file, 'r') as f:
+                lines = f.readlines()
+        keys = {"DEVICE_PUBLIC_ID": device_id, "DEVICE_TOKEN": token}
+        found = {k: False for k in keys}
+        out = []
+        for line in lines:
+            if line.startswith("DEVICE_PUBLIC_ID="):
+                out.append(f"DEVICE_PUBLIC_ID={device_id}\n")
+                found["DEVICE_PUBLIC_ID"] = True
+            elif line.startswith("DEVICE_TOKEN="):
+                out.append(f"DEVICE_TOKEN={token}\n")
+                found["DEVICE_TOKEN"] = True
+            else:
+                out.append(line)
+        for k, v in keys.items():
+            if not found[k]:
+                out.append(f"{k}={v}\n")
+        with open(env_file, 'w') as f:
+            f.writelines(out)
+        logger.info("✅ Credentials in .env gespeichert")
+
+    def _detect_capabilities(self) -> Dict[str, Any]:
+        board = self.firmware_mgr._detect_board_name()
+        sensors = ["water_level", "tds", "temperature"]
+        actuators = ["spray_pump", "fill_valve"]
+        return {"board_name": board, "sensors": sensors, "actuators": actuators}
+
+    def _run_onboarding_wizard(self):
+        mode = (self.config.onboarding_mode or "PAIRING").strip().upper()
+        if mode == "PRECONFIGURED":
+            logger.error("ONBOARDING_MODE=PRECONFIGURED aber keine Credentials vorhanden. Abbruch.")
+            sys.exit(1)
+        if mode == "PAIRING":
+            logger.info("Onboarding-Modus: PAIRING")
+            data = self.laravel.start_pairing_bootstrap()
+            if not data:
+                logger.error("Bootstrap fehlgeschlagen.")
+                sys.exit(1)
+            code = data.get("code") or data.get("bootstrap_code")
+            if not code:
+                logger.error("Kein Pairing-Code erhalten.")
+                sys.exit(1)
+            logger.info("Bitte öffne im Browser die Geräte-Paarung und gib den Code ein:")
+            logger.info(f"Pairing-Code: {code}")
+            # Polling bis 2 Minuten
+            deadline = time.time() + 120
+            while time.time() < deadline:
+                time.sleep(3)
+                status = self.laravel.poll_pairing_status(code)
+                if not status:
+                    continue
+                if status.get("paired") and status.get("device") and status.get("agent_token"):
+                    device_id = status["device"].get("public_id") or status.get("device_id")
+                    token = status.get("agent_token")
+                    if device_id and token:
+                        self._persist_credentials(device_id, token)
+                        self.laravel.set_device_headers(device_id, token)
+                        return
+            logger.error("Pairing zeitüberschreitung.")
+            sys.exit(1)
+        elif mode == "DIRECT_LOGIN":
+            logger.info("Onboarding-Modus: DIRECT_LOGIN")
+            try:
+                email = input("E-Mail: ").strip()
+                password = input("Passwort: ").strip()
+            except KeyboardInterrupt:
+                logger.error("Abgebrochen.")
+                sys.exit(1)
+            token = self.laravel.login_direct(email, password)
+            if not token:
+                logger.error("Login fehlgeschlagen.")
+                sys.exit(1)
+            reg = self.laravel.register_device_from_agent(token)
+            if not reg:
+                logger.error("Device-Registrierung fehlgeschlagen.")
+                sys.exit(1)
+            device_id = reg.get("device_id") or (reg.get("device") or {}).get("public_id")
+            agent_token = reg.get("agent_token") or reg.get("plaintext_token")
+            if not device_id or not agent_token:
+                logger.error("Ungültige Registrierungs-Antwort.")
+                sys.exit(1)
+            self._persist_credentials(device_id, agent_token)
+            self.laravel.set_device_headers(device_id, agent_token)
+        else:
+            logger.error(f"Unbekannter ONBOARDING_MODE: {mode}")
             sys.exit(1)
     
     def _clear_credentials(self):
@@ -787,23 +976,11 @@ class HardwareAgent:
         
         while not self._stop_event.is_set():
             try:
-                # System-Status sammeln
-                uptime = int(time.time() - start_time)
-                memory = psutil.virtual_memory()
-                
-                last_state = {
-                    "uptime": uptime,
-                    "memory_used": memory.used,
-                    "memory_percent": memory.percent,
-                    "python_version": platform.python_version(),
-                    "platform": platform.system().lower(),
-                }
-                
-                # Heartbeat senden
-                success = self.laravel.send_heartbeat(last_state)
+                # Heartbeat senden (ohne Payload)
+                success = self.laravel.send_heartbeat(None)
                 
                 if success:
-                    logger.debug(f"✅ Heartbeat gesendet (uptime: {uptime}s)")
+                    logger.debug("✅ Heartbeat gesendet")
                 
                 # Warte 30 Sekunden
                 time.sleep(30)
@@ -811,6 +988,20 @@ class HardwareAgent:
             except Exception as e:
                 logger.error(f"Fehler in Heartbeat-Loop: {e}")
                 time.sleep(30)
+
+    def logs_loop(self):
+        """Sammelt Logs und sendet sie periodisch als Batch"""
+        while not self._stop_event.is_set():
+            try:
+                time.sleep(60)
+                if not self._log_buffer:
+                    continue
+                items = []
+                while self._log_buffer:
+                    items.append(self._log_buffer.popleft())
+                self.laravel.send_logs_batch(items)
+            except Exception:
+                time.sleep(60)
     
     def run(self):
         """Agent starten (Hauptschleife)"""
@@ -818,10 +1009,12 @@ class HardwareAgent:
         telemetry_thread = threading.Thread(target=self.telemetry_loop, daemon=True)
         command_thread = threading.Thread(target=self.command_loop, daemon=True)
         heartbeat_thread = threading.Thread(target=self.heartbeat_loop, daemon=True)
+        logs_thread = threading.Thread(target=self.logs_loop, daemon=True)
         
         telemetry_thread.start()
         command_thread.start()
         heartbeat_thread.start()
+        logs_thread.start()
         
         logger.info("Agent läuft... (Strg+C zum Beenden)")
         logger.info(f"  Telemetrie: alle {self.config.telemetry_interval}s")
@@ -841,7 +1034,27 @@ class HardwareAgent:
         self.serial.close()
         logger.info("Agent gestoppt")
 
+def _install_log_handler(buffer: deque):
+    class BufferingHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord):
+            try:
+                buffer.append({
+                    "level": record.levelname.lower(),
+                    "message": self.format(record),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+            except Exception:
+                pass
+    handler = BufferingHandler()
+    handler.setLevel(logging.INFO)
+    fmt = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(fmt)
+    logging.getLogger().addHandler(handler)
+
 
 if __name__ == "__main__":
+    # Log-Batching aktivieren
+    # Hinweis: Handler wird im Konstruktor gesetzt, nachdem Buffer existiert
     agent = HardwareAgent()
+    _install_log_handler(agent._log_buffer)
     agent.run()

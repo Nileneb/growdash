@@ -1,3 +1,13 @@
+requests==2.31.0
+pyserial==3.5
+pydantic==2.5.0
+pydantic-settings==2.1.0
+psutil==5.9.6
+
+# Optional components
+fastapi==0.104.1
+uvicorn==0.24.0
+opencv-python==4.8.1.78
 # Vereinfachte Dependencies für Hardware-Agent
 fastapi==0.104.1
 

@@ -4,13 +4,14 @@
 # Zum Projektverzeichnis wechseln
 cd "$(dirname "$0")"
 
-# Prüfen, ob virtuelle Umgebung vorhanden ist und aktivieren
-if [ -d ".venv" ]; then
-    source .venv/bin/activate
-    echo "Virtuelle Umgebung aktiviert."
-else
-    echo "Warnung: Keine virtuelle Umgebung gefunden. Verwende System-Python."
+# Virtuelle Umgebung bereitstellen
+if [ ! -d ".venv" ]; then
+    echo "Erstelle virtuelle Umgebung (.venv)..."
+    python3 -m venv .venv || { echo "❌ Konnte .venv nicht erstellen"; exit 1; }
 fi
+
+source .venv/bin/activate
+echo "Virtuelle Umgebung aktiviert."
 
 # .env Datei prüfen
 if [ ! -f ".env" ]; then
@@ -26,22 +27,7 @@ fi
 DEVICE_ID=$(grep "^DEVICE_PUBLIC_ID=" .env | cut -d '=' -f2)
 DEVICE_TOKEN=$(grep "^DEVICE_TOKEN=" .env | cut -d '=' -f2)
 
-if [ -z "$DEVICE_ID" ] || [ -z "$DEVICE_TOKEN" ]; then
-    echo ""
-    echo "============================================================"
-    echo "⚠️  Device ist noch nicht konfiguriert!"
-    echo "============================================================"
-    echo ""
-    echo "Bitte führe zuerst das Onboarding durch:"
-    echo ""
-    echo "  python bootstrap.py"
-    echo ""
-    echo "Wähle dann:"
-    echo "  1) Pairing-Code (Empfohlen)"
-    echo "  2) Direct-Login (Power-User)"
-    echo ""
-    exit 1
-fi
+# Fehlende Credentials sind ok – der Agent startet den Onboarding-Wizard automatisch
 
 # Arduino-CLI prüfen und optional installieren
 check_arduino_cli() {
@@ -171,5 +157,9 @@ if [ ! -f ".arduino_cli_checked" ]; then
 fi
 
 # Agent starten
+echo "Installiere Python-Dependencies (requirements.txt)..."
+pip install -q --upgrade pip
+pip install -q -r requirements.txt || { echo "❌ Pip-Installation fehlgeschlagen"; exit 1; }
+
 echo "Starte GrowDash Hardware-Agent..."
-python agent.py
+python3 agent.py
