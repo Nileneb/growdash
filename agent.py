@@ -320,6 +320,38 @@ class LaravelClient:
             )
         except Exception:
             pass  # Logs sind nicht kritisch
+    
+    def send_heartbeat(self, last_state: Optional[Dict] = None) -> bool:
+        """
+        Heartbeat an Laravel senden (alle 30-60 Sekunden).
+        Hält Device-Status auf "online" und aktualisiert last_seen_at.
+        
+        Args:
+            last_state: Optional dict mit Systemstatus (uptime, memory, etc.)
+            
+        Returns:
+            True wenn erfolgreich, False bei Fehler
+        """
+        try:
+            payload = {}
+            if last_state:
+                payload["last_state"] = last_state
+            
+            response = self.session.post(
+                f"{self.base_url}/heartbeat",
+                json=payload if payload else None,
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                return True
+            else:
+                logger.warning(f"Heartbeat fehlgeschlagen: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Heartbeat-Fehler: {e}")
+            return False
 
 
 class FirmwareManager:
@@ -656,16 +688,55 @@ class HardwareAgent:
                 logger.error(f"Fehler in Command-Loop: {e}")
                 time.sleep(5)
     
+    def heartbeat_loop(self):
+        """Heartbeat-Loop (Hintergrund-Thread)"""
+        import platform
+        import psutil
+        
+        start_time = time.time()
+        
+        while not self._stop_event.is_set():
+            try:
+                # System-Status sammeln
+                uptime = int(time.time() - start_time)
+                memory = psutil.virtual_memory()
+                
+                last_state = {
+                    "uptime": uptime,
+                    "memory_used": memory.used,
+                    "memory_percent": memory.percent,
+                    "python_version": platform.python_version(),
+                    "platform": platform.system().lower(),
+                }
+                
+                # Heartbeat senden
+                success = self.laravel.send_heartbeat(last_state)
+                
+                if success:
+                    logger.debug(f"✅ Heartbeat gesendet (uptime: {uptime}s)")
+                
+                # Warte 30 Sekunden
+                time.sleep(30)
+                
+            except Exception as e:
+                logger.error(f"Fehler in Heartbeat-Loop: {e}")
+                time.sleep(30)
+    
     def run(self):
         """Agent starten (Hauptschleife)"""
         # Loops in separaten Threads starten
         telemetry_thread = threading.Thread(target=self.telemetry_loop, daemon=True)
         command_thread = threading.Thread(target=self.command_loop, daemon=True)
+        heartbeat_thread = threading.Thread(target=self.heartbeat_loop, daemon=True)
         
         telemetry_thread.start()
         command_thread.start()
+        heartbeat_thread.start()
         
         logger.info("Agent läuft... (Strg+C zum Beenden)")
+        logger.info(f"  Telemetrie: alle {self.config.telemetry_interval}s")
+        logger.info(f"  Befehle: alle {self.config.command_poll_interval}s")
+        logger.info(f"  Heartbeat: alle 30s")
         
         try:
             while not self._stop_event.is_set():

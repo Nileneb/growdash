@@ -107,15 +107,192 @@ public function register(Request $request)
 
 ---
 
+## 💓 Heartbeat-Endpoint (Critical)
+
+**Nach erfolgreicher Registrierung MUSS der Agent regelmäßig Heartbeats senden!**
+
+### Endpoint
+
+**POST** `/api/growdash/agent/heartbeat`
+
+**Authentication**: Device-Token-Headers (NICHT Sanctum!)
+
+**Headers**:
+```
+X-Device-ID: <device_id from registration>
+X-Device-Token: <agent_token from registration>
+```
+
+**Request Body (optional)**:
+```json
+{
+  "last_state": {
+    "uptime": 3600,
+    "memory": 45000,
+    "wifi_rssi": -65,
+    "python_version": "3.12.0"
+  }
+}
+```
+
+**Response (200)**:
+```json
+{
+  "success": true,
+  "message": "Heartbeat received",
+  "last_seen_at": "2025-12-02T12:34:56.000000Z"
+}
+```
+
+### Controller-Implementierung
+
+**Datei**: `app/Http/Controllers/Api/AgentController.php`
+
+```php
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
+
+class AgentController extends Controller
+{
+    public function heartbeat(Request $request)
+    {
+        // Device kommt von AuthenticateDevice Middleware
+        $device = $request->device;
+        
+        // last_seen_at aktualisieren
+        $device->update([
+            'last_seen_at' => now(),
+            'status' => 'online',
+        ]);
+        
+        // Optional: last_state speichern
+        if ($request->has('last_state')) {
+            $device->update([
+                'last_state' => $request->last_state,
+            ]);
+        }
+        
+        Log::info("Heartbeat from device {$device->public_id}");
+        
+        return response()->json([
+            'success' => true,
+            'message' => 'Heartbeat received',
+            'last_seen_at' => $device->last_seen_at,
+        ]);
+    }
+}
+```
+
+### Middleware: AuthenticateDevice
+
+**Datei**: `app/Http/Middleware/AuthenticateDevice.php`
+
+```php
+<?php
+
+namespace App\Http\Middleware;
+
+use Closure;
+use Illuminate\Http\Request;
+use App\Models\Device;
+use Symfony\Component\HttpFoundation\Response;
+
+class AuthenticateDevice
+{
+    public function handle(Request $request, Closure $next): Response
+    {
+        $deviceId = $request->header('X-Device-ID');
+        $token = $request->header('X-Device-Token');
+        
+        if (!$deviceId || !$token) {
+            return response()->json([
+                'error' => 'Missing device credentials'
+            ], 401);
+        }
+        
+        $device = Device::where('public_id', $deviceId)->first();
+        
+        if (!$device) {
+            return response()->json([
+                'error' => 'Device not found'
+            ], 404);
+        }
+        
+        // Token-Verifikation (SHA256-Hash)
+        if (!hash_equals($device->agent_token, hash('sha256', $token))) {
+            return response()->json([
+                'error' => 'Invalid device token'
+            ], 401);
+        }
+        
+        // Device an Request anhängen
+        $request->merge(['device' => $device]);
+        
+        return $next($request);
+    }
+}
+```
+
+**Registrierung in** `bootstrap/app.php`:
+
+```php
+->withMiddleware(function (Middleware $middleware) {
+    $middleware->alias([
+        'device.auth' => \App\Http\Middleware\AuthenticateDevice::class,
+    ]);
+})
+```
+
+### Status-Logik
+
+- **paired**: Device registriert, kein Heartbeat
+- **online**: Heartbeat innerhalb letzter 2 Minuten
+- **offline**: Kein Heartbeat > 2 Minuten (Cron-Job)
+- **error**: Device meldet Fehler
+
+**Cron-Job** (optional, automatisches Offline-Marking):
+
+```php
+// app/Console/Commands/MarkOfflineDevices.php
+Device::where('last_seen_at', '<', now()->subMinutes(2))
+      ->where('status', 'online')
+      ->update(['status' => 'offline']);
+```
+
+**Registrierung in** `routes/console.php`:
+
+```php
+Schedule::command('devices:mark-offline')->everyMinute();
+```
+
+---
+
 ## 🗺️ Route-Konfiguration
 
 **Datei**: `routes/api.php`
 
 ```php
 use App\Http\Controllers\Api\DeviceController;
+use App\Http\Controllers\Api\AgentController;
 
+// User-Auth Endpoints (Sanctum)
 Route::middleware('auth:sanctum')->prefix('growdash')->group(function () {
     Route::post('/devices/register', [DeviceController::class, 'register']);
+});
+
+// Agent Endpoints (Device-Token-Auth)
+Route::middleware('device.auth')->prefix('growdash/agent')->group(function () {
+    Route::post('/heartbeat', [AgentController::class, 'heartbeat']);
+    Route::post('/telemetry', [AgentController::class, 'telemetry']);
+    Route::get('/commands/pending', [AgentController::class, 'pendingCommands']);
+    Route::post('/commands/{id}/result', [AgentController::class, 'commandResult']);
+    Route::post('/capabilities', [AgentController::class, 'updateCapabilities']);
+    Route::post('/logs', [AgentController::class, 'storeLogs']);
 });
 ```
 
@@ -153,6 +330,9 @@ return new class extends Migration
             if (!Schema::hasColumn('devices', 'device_info')) {
                 $table->json('device_info')->nullable()->after('name');
             }
+            if (!Schema::hasColumn('devices', 'last_state')) {
+                $table->json('last_state')->nullable()->after('device_info');
+            }
             if (!Schema::hasColumn('devices', 'paired_at')) {
                 $table->timestamp('paired_at')->nullable()->after('status');
             }
@@ -162,7 +342,7 @@ return new class extends Migration
     public function down(): void
     {
         Schema::table('devices', function (Blueprint $table) {
-            $table->dropColumn(['bootstrap_id', 'device_info', 'paired_at']);
+            $table->dropColumn(['bootstrap_id', 'device_info', 'last_state', 'paired_at']);
         });
     }
 };
@@ -262,6 +442,7 @@ class Device extends Model
         'name',
         'agent_token',
         'device_info',
+        'last_state',
         'status',
         'paired_at',
         'last_seen_at',
@@ -269,6 +450,7 @@ class Device extends Model
 
     protected $casts = [
         'device_info' => 'array',
+        'last_state' => 'array',
         'paired_at' => 'datetime',
         'last_seen_at' => 'datetime',
     ];
@@ -349,6 +531,33 @@ curl -X POST https://grow.linn.games/api/auth/logout \
   -H "Accept: application/json"
 ```
 
+### 4. Heartbeat senden (nach Registrierung)
+
+```bash
+DEVICE_ID="9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"
+AGENT_TOKEN="7f3d9a8b...64-char-token...c2e1f4a6"
+
+curl -X POST https://grow.linn.games/api/growdash/agent/heartbeat \
+  -H "X-Device-ID: $DEVICE_ID" \
+  -H "X-Device-Token: $AGENT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "last_state": {
+      "uptime": 3600,
+      "memory": 45000
+    }
+  }'
+```
+
+**Erwartete Antwort (200)**:
+```json
+{
+  "success": true,
+  "message": "Heartbeat received",
+  "last_seen_at": "2025-12-02T12:34:56.000000Z"
+}
+```
+
 ---
 
 ## 🔍 Troubleshooting
@@ -382,15 +591,27 @@ php artisan cache:clear
 
 ## ✅ Checkliste
 
-- [ ] Migration ausgeführt (`bootstrap_id`, `device_info`, `paired_at` in `devices`)
+### Backend-Setup
+- [ ] Migration ausgeführt (`bootstrap_id`, `device_info`, `paired_at`, `last_state` in `devices`)
 - [ ] `Device` Model aktualisiert (fillable, casts, hidden)
 - [ ] `DeviceController@register` implementiert
+- [ ] `AgentController` erstellt (heartbeat, telemetry, commands, logs)
+- [ ] `AuthenticateDevice` Middleware erstellt und registriert
 - [ ] `ApiAuthController` für Login/Logout implementiert
-- [ ] Routes in `api.php` registriert
+- [ ] Routes in `api.php` registriert (User-Auth + Agent-Auth)
 - [ ] Sanctum konfiguriert (`config/sanctum.php`)
+
+### Testing
 - [ ] Login-Endpoint getestet (Token erhalten)
 - [ ] Register-Endpoint getestet (Device erstellt)
 - [ ] Logout-Endpoint getestet (Token revoked)
+- [ ] Heartbeat-Endpoint getestet (Status → online)
+- [ ] Device-Token-Auth funktioniert (401 bei falschem Token)
+
+### Optional
+- [ ] Cron-Job für Offline-Marking (`devices:mark-offline`)
+- [ ] Telemetry-Endpoint implementiert
+- [ ] Commands-Queue implementiert
 
 ---
 

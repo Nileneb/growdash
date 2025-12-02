@@ -46,6 +46,9 @@ data/
 # Environment & Secrets
 .env
 
+# Arduino-CLI check marker
+.arduino_cli_checked
+
 # Firmware Flash Log
 firmware/flash_log.json
 

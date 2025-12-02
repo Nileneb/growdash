@@ -5,6 +5,14 @@
 Die gesamte Business-Logik wird von einer externen Laravel-App übernommen. 
 Dieser Agent stellt nur noch Hardware-Zugriff zur Verfügung.
 
+## 📚 Dokumentation
+
+- **[LARAVEL_IMPLEMENTATION.md](LARAVEL_IMPLEMENTATION.md)** - Vollständige Laravel-Backend-Anleitung
+- **[AGENT_HEARTBEAT.md](AGENT_HEARTBEAT.md)** - Heartbeat-Implementierung (Python + Laravel)
+- **[PAIRING_FLOW.md](PAIRING_FLOW.md)** - Pairing-Code-Flow Details
+- **[ONBOARDING_MODES.md](ONBOARDING_MODES.md)** - Vergleich: Pairing vs. Direct Login
+- **[LARAVEL_ENDPOINTS.md](LARAVEL_ENDPOINTS.md)** - API-Endpoint-Spezifikation
+
 ## 🚀 Quick Start (Komplett-Anleitung)
 
 ### 1. Installation
@@ -48,6 +56,39 @@ Das installiert:
 ```
 
 **Das war's!** 🎉
+
+**Hinweis**: Beim ersten Start wird optional Arduino-CLI Installation angeboten (für Firmware-Updates).
+
+---
+
+## 🔧 Optional: Arduino-CLI Installation
+
+Für Firmware-Updates wird Arduino-CLI benötigt.
+
+### Automatisch (beim ersten Agent-Start)
+
+```bash
+./grow_start.sh
+# → Fragt nach Arduino-CLI Installation falls nicht vorhanden
+```
+
+### Manuell (jederzeit)
+
+```bash
+./install_arduino_cli.sh
+```
+
+**Features**:
+- Auto-Erkennung der System-Architektur (x86_64, ARM64, ARMv7)
+- Wahl zwischen System-Installation (`/usr/local/bin`) oder User-Installation (`~/.local/bin`)
+- Automatische `.env` Aktualisierung
+- Installation der Arduino AVR Boards
+
+**Test**:
+```bash
+arduino-cli version
+arduino-cli board list
+```
 
 ---
 
