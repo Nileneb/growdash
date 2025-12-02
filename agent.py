@@ -242,21 +242,30 @@ class LaravelClient:
 
     # ---------- Onboarding / Auth Flows (außerhalb der Agent-API) ----------
     def start_pairing_bootstrap(self) -> Optional[Dict[str, Any]]:
-        """/api/agents/bootstrap aufrufen und Bootstrap-Code erhalten"""
+        """/api/agents/bootstrap mit Details aufrufen und Bootstrap-Code erhalten"""
         url = f"{self.config.laravel_base_url}/api/agents/bootstrap"
         try:
-            r = requests.post(url, json={}, timeout=15)
+            payload = {
+                "bootstrap_id": self._make_bootstrap_id(),
+                "name": "GrowDash Device",
+                "board_type": self._detect_board_name_for_bootstrap(),
+                "capabilities": {
+                    "sensors": ["water_level", "tds", "temperature"],
+                    "actuators": ["spray_pump", "fill_valve"],
+                },
+            }
+            r = requests.post(url, json=payload, timeout=20)
             r.raise_for_status()
             return r.json()
         except Exception as e:
             logger.error(f"Pairing-Bootstrap fehlgeschlagen: {e}")
             return None
 
-    def poll_pairing_status(self, code: str) -> Optional[Dict[str, Any]]:
+    def poll_pairing_status(self, bootstrap_id: str, code: str) -> Optional[Dict[str, Any]]:
         """/api/agents/pairing/status pollen bis Device + Token geliefert werden"""
         url = f"{self.config.laravel_base_url}/api/agents/pairing/status"
         try:
-            r = requests.get(url, params={"code": code}, timeout=10)
+            r = requests.get(url, params={"bootstrap_id": bootstrap_id, "bootstrap_code": code}, timeout=10)
             r.raise_for_status()
             return r.json()
         except Exception as e:
@@ -278,11 +287,22 @@ class LaravelClient:
             return None
 
     def register_device_from_agent(self, bearer_token: str) -> Optional[Dict[str, Any]]:
-        """/api/growdash/devices/register-from-agent → public_id + agent_token (PLAINTEXT)"""
-        url = f"{self.config.laravel_base_url}/api/growdash/devices/register-from-agent"
+        """/api/growdash/devices/register → public_id + agent_token (PLAINTEXT)"""
+        url = f"{self.config.laravel_base_url}/api/growdash/devices/register"
         try:
             headers = {"Authorization": f"Bearer {bearer_token}", "Content-Type": "application/json"}
-            r = requests.post(url, json={}, headers=headers, timeout=20)
+            payload = {
+                "bootstrap_id": self._make_bootstrap_id(),
+                "name": "GrowDash Device",
+                "board_type": self._detect_board_name_for_bootstrap(),
+                "capabilities": {
+                    "board_name": self._detect_board_name_for_bootstrap(),
+                    "sensors": ["water_level", "ph", "ec"],
+                    "actuators": ["spray_pump", "fill_valve"],
+                },
+                "revoke_user_token": True,
+            }
+            r = requests.post(url, json=payload, headers=headers, timeout=25)
             r.raise_for_status()
             return r.json()
         except Exception as e:
@@ -414,11 +434,11 @@ class LaravelClient:
             True wenn erfolgreich, False bei Fehler
         """
         try:
-            # Gemäß neuer Spezifikation: ohne Payload senden
+            payload = {"last_state": last_state} if last_state else None
             response = self.session.post(
                 f"{self.base_url}/heartbeat",
-                json=None,
-                timeout=5
+                json=payload,
+                timeout=8
             )
             
             if response.status_code == 200:
@@ -767,7 +787,8 @@ class HardwareAgent:
             if not data:
                 logger.error("Bootstrap fehlgeschlagen.")
                 sys.exit(1)
-            code = data.get("code") or data.get("bootstrap_code")
+            bootstrap_id = data.get("device_id") or data.get("bootstrap_id") or self._make_bootstrap_id()
+            code = data.get("bootstrap_code") or data.get("code")
             if not code:
                 logger.error("Kein Pairing-Code erhalten.")
                 sys.exit(1)
@@ -777,11 +798,11 @@ class HardwareAgent:
             deadline = time.time() + 120
             while time.time() < deadline:
                 time.sleep(3)
-                status = self.laravel.poll_pairing_status(code)
+                status = self.laravel.poll_pairing_status(bootstrap_id, code)
                 if not status:
                     continue
-                if status.get("paired") and status.get("device") and status.get("agent_token"):
-                    device_id = status["device"].get("public_id") or status.get("device_id")
+                if (status.get("status") == "paired") and (status.get("agent_token") is not None):
+                    device_id = status.get("public_id") or (status.get("device") or {}).get("public_id")
                     token = status.get("agent_token")
                     if device_id and token:
                         self._persist_credentials(device_id, token)
@@ -1042,6 +1063,9 @@ def _install_log_handler(buffer: deque):
                     "level": record.levelname.lower(),
                     "message": self.format(record),
                     "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "context": {
+                        "logger": record.name,
+                    }
                 })
             except Exception:
                 pass
