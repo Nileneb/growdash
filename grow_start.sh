@@ -4,14 +4,14 @@
 # Zum Projektverzeichnis wechseln
 cd "$(dirname "$0")"
 
-# Virtuelle Umgebung bereitstellen
-if [ ! -d ".venv" ]; then
-    echo "Erstelle virtuelle Umgebung (.venv)..."
-    python3 -m venv .venv || { echo "❌ Konnte .venv nicht erstellen"; exit 1; }
+# Virtuelle Umgebung bereitstellen (verwende 'venv' statt '.venv')
+if [ ! -d "venv" ]; then
+    echo "Erstelle virtuelle Umgebung (venv)..."
+    python3 -m venv venv || { echo "❌ Konnte venv nicht erstellen"; exit 1; }
 fi
 
-source .venv/bin/activate
-echo "Virtuelle Umgebung aktiviert."
+source venv/bin/activate
+echo "Virtuelle Umgebung (venv) aktiviert."
 
 # .env Datei prüfen
 if [ ! -f ".env" ]; then
@@ -157,9 +157,9 @@ if [ ! -f ".arduino_cli_checked" ]; then
 fi
 
 # Agent starten
-echo "Installiere Python-Dependencies (requirements.txt)..."
-pip install -q --upgrade pip
-pip install -q -r requirements.txt || { echo "❌ Pip-Installation fehlgeschlagen"; exit 1; }
+echo "Installiere Python-Dependencies (requirements.txt in venv)..."
+pip install -q --upgrade pip || { echo "❌ Upgrade pip fehlgeschlagen"; exit 1; }
+pip install -r requirements.txt || { echo "❌ Pip-Installation fehlgeschlagen"; exit 1; }
 
 echo "Starte GrowDash Hardware-Agent..."
 python3 agent.py

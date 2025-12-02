@@ -11,8 +11,8 @@ echo ""
 # Virtual Environment aktivieren ODER erstellen
 if [ ! -d ".venv" ]; then
     echo "📦 Erstelle Python Virtual Environment..."
-    python3 -m venv .venv
-    source .venv/bin/activate
+    python3 -m venv venv
+    source venv/bin/activate
     echo "✅ Virtual Environment erstellt"
     echo ""
     echo "📚 Installiere Dependencies..."
@@ -21,7 +21,7 @@ if [ ! -d ".venv" ]; then
     echo "✅ Dependencies installiert"
     echo ""
 else
-    source .venv/bin/activate
+    source venv/bin/activate
 fi
 
 # .env erstellen falls nicht vorhanden

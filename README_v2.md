@@ -102,7 +102,7 @@ Falls du die Skripte nicht nutzen willst:
 cd ~/growdash
 
 # Virtual Environment
-python3 -m venv .venv
+python3 -m venv venv
 source .venv/bin/activate
 
 # Dependencies
@@ -115,7 +115,7 @@ cp .env.example .env
 ### Ersteinrichtung - Onboarding Wizard
 
 ```bash
-source .venv/bin/activate
+source venv/bin/activate
 python bootstrap.py
 ```
 
@@ -172,7 +172,7 @@ nano .env  # Konfiguration anpassen
 ### 2. Virtuelle Umgebung erstellen
 
 ```bash
-python -m venv .venv
+python -m venv venv
 source .venv/bin/activate
 ```
 
@@ -256,7 +256,7 @@ X-Device-Token: xxx
     ...
   ]
 }
-```
+    source venv/bin/activate
 
 ### 2. Befehle abrufen (GET)
 

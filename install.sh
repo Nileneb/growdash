@@ -25,12 +25,12 @@ echo "✅ Dependencies installiert"
 echo ""
 
 # 3. .env erstellen
-if [ ! -f ".env" ]; then
-    echo "📄 Erstelle .env Konfiguration..."
-    cp .env.example .env
+if [ ! -d "venv" ]; then
+    echo "Erstelle Python Virtual Environment (venv)";
+    python3 -m venv venv
     echo "✅ .env erstellt"
     echo ""
-fi
+source venv/bin/activate
 
 # 4. Fertig
 echo "✅ Installation abgeschlossen!"
@@ -39,6 +39,6 @@ echo "Nächster Schritt: Onboarding"
 echo "  ./setup.sh"
 echo ""
 echo "Oder direkt:"
-echo "  source .venv/bin/activate"
+echo "  source venv/bin/activate"
 echo "  python bootstrap.py"
 echo ""

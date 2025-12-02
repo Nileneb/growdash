@@ -6,7 +6,7 @@
 
 ```bash
 cd ~/growdash
-source .venv/bin/activate
+source venv/bin/activate
 python bootstrap.py
 ```
 
@@ -177,7 +177,7 @@ php artisan growdash:pair-device
 
 ```bash
 cd ~/growdash
-source .venv/bin/activate
+source venv/bin/activate
 
 # Env-Vars laden
 export $(grep -v '^#' .env | xargs)

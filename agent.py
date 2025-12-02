@@ -231,6 +231,43 @@ class LaravelClient:
         
         # Device-Token-Auth in allen Requests
         self.set_device_headers(config.device_public_id, config.device_token)
+        # Bootstrap helpers cache
+        self._cached_bootstrap_id: Optional[str] = None
+
+    # -------- Helper Methods (Bootstrap / Board Detection) --------
+    def _make_bootstrap_id(self) -> str:
+        """Generate a semi-stable bootstrap_id (host + time fragment)."""
+        if self._cached_bootstrap_id:
+            return self._cached_bootstrap_id
+        host = os.uname().nodename if hasattr(os, 'uname') else 'host'
+        suffix = hex(int(time.time()))[-6:]
+        self._cached_bootstrap_id = f"growdash-{host}-{suffix}"
+        return self._cached_bootstrap_id
+
+    def _detect_board_name_for_bootstrap(self) -> str:
+        """Lightweight board detection for bootstrap payload."""
+        try:
+            # Try arduino-cli board list
+            cli = self.config.arduino_cli_path
+            if cli and os.path.exists(cli):
+                res = subprocess.run([cli, 'board', 'list'], capture_output=True, text=True, timeout=6)
+                out = (res.stdout or '') + (res.stderr or '')
+                low = out.lower()
+                if 'arduino uno' in low:
+                    return 'arduino_uno'
+                if 'arduino mega' in low:
+                    return 'arduino_mega'
+                if 'arduino nano' in low:
+                    return 'arduino_nano'
+                if 'esp32' in low:
+                    return 'esp32'
+                if 'esp8266' in low:
+                    return 'esp8266'
+        except Exception:
+            pass
+        return 'arduino_uno'
+        # Cache for simple board detection fallback
+        self._cached_board_name: Optional[str] = None
 
     def set_device_headers(self, device_id: str, device_token: str):
         """Headers für Device-Auth setzen/aktualisieren"""
@@ -239,6 +276,25 @@ class LaravelClient:
             "X-Device-Token": device_token or "",
             "Content-Type": "application/json"
         })
+
+    def _make_bootstrap_id(self) -> str:
+        """Bootstrap-ID generieren (stabil pro Host + Port)"""
+        import socket
+        host = socket.gethostname()
+        port = (self.config.serial_port or "serial").replace("/", "_")
+        return f"{host}-{port}"[:64]
+
+    def _detect_board_name_for_bootstrap(self) -> str:
+        """Einfaches Board-Mapping für Bootstrap"""
+        if self._cached_board_name:
+            return self._cached_board_name
+        # Very light heuristic; could be expanded
+        sp = self.config.serial_port.lower()
+        if "ttyusb" in sp or "ttyacm" in sp:
+            self._cached_board_name = "arduino_uno"
+        else:
+            self._cached_board_name = "arduino_uno"
+        return self._cached_board_name
 
     # ---------- Onboarding / Auth Flows (außerhalb der Agent-API) ----------
     def start_pairing_bootstrap(self) -> Optional[Dict[str, Any]]:
@@ -459,7 +515,12 @@ class LaravelClient:
                 json={"capabilities": caps},
                 timeout=10,
             )
-            r.raise_for_status()
+            if r.status_code >= 400:
+                try:
+                    logger.error(f"Capabilities Error {r.status_code}: {r.text}")
+                except Exception:
+                    logger.error(f"Capabilities Error {r.status_code} (no body)")
+                r.raise_for_status()
             return True
         except Exception as e:
             logger.error(f"Capabilities-Übertragung fehlgeschlagen: {e}")
@@ -992,16 +1053,22 @@ class HardwareAgent:
         """Heartbeat-Loop (Hintergrund-Thread)"""
         import platform
         import psutil
-        
         start_time = time.time()
         
         while not self._stop_event.is_set():
             try:
-                # Heartbeat senden (ohne Payload)
-                success = self.laravel.send_heartbeat(None)
+                uptime = int(time.time() - start_time)
+                memory = psutil.virtual_memory()
+                last_state = {
+                    "uptime": uptime,
+                    "memory_free": int(memory.available / 1024),
+                    "python_version": platform.python_version(),
+                    "platform": platform.system().lower(),
+                }
+                success = self.laravel.send_heartbeat(last_state)
                 
                 if success:
-                    logger.debug("✅ Heartbeat gesendet")
+                    logger.debug(f"✅ Heartbeat gesendet (uptime={uptime}s)")
                 
                 # Warte 30 Sekunden
                 time.sleep(30)

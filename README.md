@@ -14,10 +14,11 @@ Eine modulare Anwendung, die nur auf Arduino-Steuerung und Webcam-Funktionalitä
 
 ```bash
 # Virtuelle Umgebung erstellen
-python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
 # oder
 # .venv\Scripts\activate  # Windows
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# venv\Scripts\activate  # Windows
 
 # Für PyAudio werden zusätzliche Abhängigkeiten benötigt
 # Ubuntu/Debian:

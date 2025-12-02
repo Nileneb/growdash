@@ -208,7 +208,7 @@ if (!Hash::check($token, $device->agent_token)) {
 ```bash
 # Agent-Seite
 cd ~/growdash
-source .venv/bin/activate
+source venv/bin/activate
 python pairing.py
 
 # Output:
