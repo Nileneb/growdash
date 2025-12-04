@@ -28,6 +28,7 @@ cd growdash
 - ✅ **Firmware Updates** - Sichere Arduino-Firmware-Updates via arduino-cli
 - ✅ **Log Batching** - Sendet Logs periodisch ans Backend
 - ✅ **Multi-Device Support** - Automatisches Scannen und Verwalten mehrerer USB-Devices
+- ✅ **Port-Scanner API** - Dynamische Port-Erkennung für Frontend-Integration
 
 ## 🔌 Multi-Device Modus
 

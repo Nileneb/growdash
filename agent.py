@@ -596,6 +596,41 @@ class LaravelClient:
         except Exception as e:
             logger.error(f"Capabilities-Übertragung fehlgeschlagen: {e}")
             return False
+    
+    def get_available_ports(self) -> List[Dict[str, str]]:
+        """
+        Scanne verfügbare Serial-Ports.
+        Wird vom Backend über /ports Endpoint abgerufen.
+        
+        Returns:
+            List von Port-Infos: [{port, description, vendor_id, product_id}, ...]
+        """
+        try:
+            import serial.tools.list_ports as list_ports
+            
+            ports_info = []
+            ports = list_ports.comports()
+            
+            for port in ports:
+                port_data = {
+                    "port": port.device,
+                    "description": port.description or "Unknown",
+                    "vendor_id": f"{port.vid:04x}" if port.vid else None,
+                    "product_id": f"{port.pid:04x}" if port.pid else None,
+                    "manufacturer": port.manufacturer or None,
+                    "serial_number": port.serial_number or None,
+                }
+                ports_info.append(port_data)
+                logger.debug(f"Erkannter Port: {port.device} - {port.description}")
+            
+            return ports_info
+            
+        except ImportError:
+            logger.error("pyserial nicht installiert - Port-Scan nicht möglich")
+            return []
+        except Exception as e:
+            logger.error(f"Fehler beim Port-Scan: {e}")
+            return []
 
 
 class FirmwareManager:
