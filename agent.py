@@ -802,6 +802,159 @@ class FirmwareManager:
         except Exception:
             pass
         return "arduino_uno"
+    
+    def compile_sketch(self, sketch_path: str, board: str = "arduino:avr:uno") -> tuple[bool, str]:
+        """
+        Kompiliert ein Arduino-Sketch ohne Upload.
+        
+        Args:
+            sketch_path: Pfad zur .ino Datei
+            board: Board FQBN (z.B. arduino:avr:uno)
+            
+        Returns:
+            (success, message)
+        """
+        try:
+            logger.info(f"Kompiliere Sketch: {sketch_path} für Board: {board}")
+            
+            compile_cmd = [
+                self.arduino_cli,
+                "compile",
+                "--fqbn", board,
+                sketch_path
+            ]
+            
+            result = subprocess.run(
+                compile_cmd,
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+            
+            if result.returncode != 0:
+                msg = f"Kompilierung fehlgeschlagen:\n{result.stderr}"
+                logger.error(msg)
+                return False, msg
+            
+            msg = "Sketch erfolgreich kompiliert"
+            logger.info(msg)
+            return True, f"{msg}\n{result.stdout}"
+            
+        except subprocess.TimeoutExpired:
+            msg = "Kompilierung timeout (>120s)"
+            logger.error(msg)
+            return False, msg
+        except Exception as e:
+            msg = f"Fehler beim Kompilieren: {e}"
+            logger.error(msg)
+            return False, msg
+    
+    def upload_hex(self, hex_file: str, board: str, port: str) -> tuple[bool, str]:
+        """
+        Uploaded kompilierte .hex Datei zum Arduino.
+        
+        Args:
+            hex_file: Pfad zur .hex Datei
+            board: Board FQBN
+            port: Serial-Port
+            
+        Returns:
+            (success, message)
+        """
+        try:
+            logger.info(f"Uploade HEX: {hex_file} -> {port} (Board: {board})")
+            
+            upload_cmd = [
+                self.arduino_cli,
+                "upload",
+                "--fqbn", board,
+                "--port", port,
+                "--input-file", hex_file
+            ]
+            
+            result = subprocess.run(
+                upload_cmd,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            
+            if result.returncode != 0:
+                msg = f"Upload fehlgeschlagen:\n{result.stderr}"
+                logger.error(msg)
+                return False, msg
+            
+            msg = f"Firmware erfolgreich auf {port} uploaded"
+            logger.info(msg)
+            return True, f"{msg}\n{result.stdout}"
+            
+        except subprocess.TimeoutExpired:
+            msg = "Upload timeout (>60s)"
+            logger.error(msg)
+            return False, msg
+        except Exception as e:
+            msg = f"Fehler beim Upload: {e}"
+            logger.error(msg)
+            return False, msg
+    
+    def compile_and_upload(self, sketch_path: str, board: str, port: str) -> tuple[bool, str]:
+        """
+        Kompiliert UND uploaded Sketch in einem Schritt.
+        
+        Args:
+            sketch_path: Pfad zur .ino Datei
+            board: Board FQBN
+            port: Serial-Port
+            
+        Returns:
+            (success, message)
+        """
+        try:
+            logger.info(f"Compile + Upload: {sketch_path} -> {port} (Board: {board})")
+            
+            # Compile
+            compile_success, compile_msg = self.compile_sketch(sketch_path, board)
+            if not compile_success:
+                return False, f"Kompilierung fehlgeschlagen: {compile_msg}"
+            
+            # Upload direkt mit sketch_path (arduino-cli handled das)
+            upload_cmd = [
+                self.arduino_cli,
+                "upload",
+                "--fqbn", board,
+                "--port", port,
+                sketch_path
+            ]
+            
+            result = subprocess.run(
+                upload_cmd,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            
+            if result.returncode != 0:
+                msg = f"Upload fehlgeschlagen:\n{result.stderr}"
+                logger.error(msg)
+                return False, msg
+            
+            msg = f"Sketch erfolgreich kompiliert und auf {port} uploaded"
+            logger.info(msg)
+            
+            # Log Event
+            timestamp = datetime.now(timezone.utc).isoformat()
+            self._log_flash_event(timestamp, sketch_path, port, True)
+            
+            return True, f"{msg}\n{result.stdout}"
+            
+        except subprocess.TimeoutExpired:
+            msg = "Compile+Upload timeout"
+            logger.error(msg)
+            return False, msg
+        except Exception as e:
+            msg = f"Fehler bei Compile+Upload: {e}"
+            logger.error(msg)
+            return False, msg
 
 
 class HardwareAgent:
@@ -1109,6 +1262,126 @@ class HardwareAgent:
                 self.serial = SerialProtocol(self.config.serial_port, self.config.baud_rate)
                 
                 return success, message
+            
+            # Arduino-CLI Commands (von Laravel ArduinoCompileController)
+            elif cmd_type == "arduino_compile":
+                """
+                Kompiliert Arduino-Code ohne Upload.
+                Params:
+                  - code: Arduino Sketch Code
+                  - board: Board-Type (z.B. arduino:avr:uno)
+                  - sketch_name: Optional, Name des Sketches
+                """
+                code = params.get("code", "")
+                board = params.get("board", "arduino:avr:uno")
+                sketch_name = params.get("sketch_name", "temp_sketch")
+                
+                if not code:
+                    return False, "Kein Arduino-Code angegeben"
+                
+                # Temporäres Sketch-Verzeichnis erstellen
+                import tempfile
+                sketch_dir = Path(tempfile.mkdtemp(prefix="arduino_sketch_"))
+                sketch_file = sketch_dir / f"{sketch_name}.ino"
+                
+                try:
+                    # Code in .ino Datei schreiben
+                    sketch_file.write_text(code)
+                    logger.info(f"Sketch erstellt: {sketch_file}")
+                    
+                    # Arduino-CLI Compile
+                    success, message = self.firmware_mgr.compile_sketch(
+                        str(sketch_file),
+                        board
+                    )
+                    
+                    return success, message
+                    
+                finally:
+                    # Cleanup
+                    import shutil
+                    shutil.rmtree(sketch_dir, ignore_errors=True)
+            
+            elif cmd_type == "arduino_upload":
+                """
+                Uploaded bereits kompilierten Code zum Arduino.
+                Params:
+                  - hex_file: Pfad zur kompilierten .hex Datei
+                  - board: Board-Type
+                  - port: Serial-Port (optional, nutzt config wenn nicht angegeben)
+                """
+                hex_file = params.get("hex_file", "")
+                board = params.get("board", "arduino:avr:uno")
+                port = params.get("port", self.config.serial_port)
+                
+                if not hex_file or not Path(hex_file).exists():
+                    return False, f"HEX-Datei nicht gefunden: {hex_file}"
+                
+                # Serial-Verbindung schließen
+                self.serial.close()
+                time.sleep(1)
+                
+                try:
+                    # Arduino-CLI Upload
+                    success, message = self.firmware_mgr.upload_hex(
+                        hex_file,
+                        board,
+                        port
+                    )
+                    
+                    return success, message
+                    
+                finally:
+                    # Serial-Verbindung wiederherstellen
+                    time.sleep(2)
+                    self.serial = SerialProtocol(self.config.serial_port, self.config.baud_rate)
+            
+            elif cmd_type == "arduino_compile_upload":
+                """
+                Kompiliert UND uploaded Arduino-Code in einem Schritt.
+                Params:
+                  - code: Arduino Sketch Code
+                  - board: Board-Type
+                  - port: Serial-Port (optional)
+                  - sketch_name: Optional
+                """
+                code = params.get("code", "")
+                board = params.get("board", "arduino:avr:uno")
+                port = params.get("port", self.config.serial_port)
+                sketch_name = params.get("sketch_name", "temp_sketch")
+                
+                if not code:
+                    return False, "Kein Arduino-Code angegeben"
+                
+                # Temporäres Sketch-Verzeichnis
+                import tempfile
+                sketch_dir = Path(tempfile.mkdtemp(prefix="arduino_sketch_"))
+                sketch_file = sketch_dir / f"{sketch_name}.ino"
+                
+                try:
+                    # Code schreiben
+                    sketch_file.write_text(code)
+                    logger.info(f"Sketch erstellt: {sketch_file}")
+                    
+                    # Serial schließen
+                    self.serial.close()
+                    time.sleep(1)
+                    
+                    # Compile + Upload
+                    success, message = self.firmware_mgr.compile_and_upload(
+                        str(sketch_file),
+                        board,
+                        port
+                    )
+                    
+                    return success, message
+                    
+                finally:
+                    # Cleanup & Serial wiederherstellen
+                    import shutil
+                    shutil.rmtree(sketch_dir, ignore_errors=True)
+                    time.sleep(2)
+                    self.serial = SerialProtocol(self.config.serial_port, self.config.baud_rate)
             
             else:
                 return False, f"Unbekannter Befehl: {cmd_type}"
