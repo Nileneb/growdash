@@ -1282,7 +1282,8 @@ class HardwareAgent:
                 # Temporäres Sketch-Verzeichnis erstellen
                 import tempfile
                 sketch_dir = Path(tempfile.mkdtemp(prefix="arduino_sketch_"))
-                sketch_file = sketch_dir / f"{sketch_name}.ino"
+                # FIX: Sketch-Datei MUSS gleichen Namen wie Verzeichnis haben!
+                sketch_file = sketch_dir / f"{sketch_dir.name}.ino"
                 
                 try:
                     # Code in .ino Datei schreiben
@@ -1356,7 +1357,8 @@ class HardwareAgent:
                 # Temporäres Sketch-Verzeichnis
                 import tempfile
                 sketch_dir = Path(tempfile.mkdtemp(prefix="arduino_sketch_"))
-                sketch_file = sketch_dir / f"{sketch_name}.ino"
+                # FIX: Sketch-Datei MUSS gleichen Namen wie Verzeichnis haben!
+                sketch_file = sketch_dir / f"{sketch_dir.name}.ino"
                 
                 try:
                     # Code schreiben
