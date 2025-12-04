@@ -477,22 +477,30 @@ class LaravelClient:
             logger.error(f"Fehler beim Abrufen der Befehle: {e}")
             return []
     
-    def report_command_result(self, command_id: str, success: bool, message: str = ""):
-        """Befehlsausführung an Laravel melden (neue API-Struktur)"""
+    def report_command_result(self, command_id: str, result: Dict[str, Any]):
+        """Befehlsausführung an Laravel melden mit vollständigem Result-Dict"""
         try:
-            # Status basierend auf success bestimmen
-            status = "completed" if success else "failed"
+            # Status bestimmen
+            status = result.get('status', 'failed')
+            message = result.get('message', '')
+            output = result.get('output', '')
+            error = result.get('error', '')
+            
+            payload = {
+                "status": status,
+                "result_message": message,
+                "output": output,
+                "error": error
+            }
             
             response = self.session.post(
                 f"{self.base_url}/commands/{command_id}/result",
-                json={
-                    "status": status,
-                    "result_message": message
-                },
+                json=payload,
                 timeout=10
             )
             response.raise_for_status()
-            logger.info(f"Befehlsergebnis gemeldet: {command_id} -> {status}")
+            
+            logger.info(f"✅ Befehlsergebnis gemeldet: {command_id} -> {status}")
             
         except Exception as e:
             logger.error(f"Fehler beim Melden des Ergebnisses für {command_id}: {e}")
@@ -655,7 +663,7 @@ class FirmwareManager:
         if not os.path.exists(self.arduino_cli):
             logger.warning(f"Arduino-CLI nicht gefunden: {self.arduino_cli}")
     
-    def flash_firmware(self, module_id: str, port: str = None) -> tuple[bool, str]:
+    def flash_firmware(self, module_id: str, port: str = None) -> tuple[bool, str, str, str]:
         """
         Firmware auf Arduino flashen.
         Nur erlaubte Module werden akzeptiert (Whitelist).
@@ -665,13 +673,13 @@ class FirmwareManager:
             port: Serial-Port (optional, nutzt config wenn nicht angegeben)
             
         Returns:
-            (success, message)
+            (success, message, output, error)
         """
         # Sicherheitsprüfung: Nur erlaubte Module
         if module_id not in self.ALLOWED_MODULES:
             msg = f"Unbekanntes Modul: {module_id}. Erlaubt: {list(self.ALLOWED_MODULES.keys())}"
             logger.error(msg)
-            return False, msg
+            return False, msg, "", msg
         
         firmware_file = self.ALLOWED_MODULES[module_id]
         firmware_path = os.path.join(self.firmware_dir, firmware_file)
@@ -680,7 +688,7 @@ class FirmwareManager:
         if not os.path.exists(firmware_path):
             msg = f"Firmware-Datei nicht gefunden: {firmware_path}"
             logger.error(msg)
-            return False, msg
+            return False, msg, "", msg
         
         # Port bestimmen
         target_port = port or self.config.serial_port
@@ -707,9 +715,10 @@ class FirmwareManager:
             )
             
             if result.returncode != 0:
-                msg = f"Kompilierung fehlgeschlagen: {result.stderr}"
-                logger.error(msg)
-                return False, msg
+                error_msg = result.stderr + "\n" + result.stdout
+                msg = f"Kompilierung fehlgeschlagen"
+                logger.error(f"{msg}:\n{error_msg}")
+                return False, msg, result.stdout, error_msg
             
             logger.info("Kompilierung erfolgreich")
             
@@ -730,9 +739,10 @@ class FirmwareManager:
             )
             
             if result.returncode != 0:
-                msg = f"Upload fehlgeschlagen: {result.stderr}"
-                logger.error(msg)
-                return False, msg
+                error_msg = result.stderr + "\n" + result.stdout
+                msg = f"Upload fehlgeschlagen"
+                logger.error(f"{msg}:\n{error_msg}")
+                return False, msg, result.stdout, error_msg
             
             msg = f"Firmware erfolgreich geflasht: {module_id}"
             logger.info(f"[{timestamp}] {msg}")
@@ -740,19 +750,19 @@ class FirmwareManager:
             # Flash-Ereignis loggen
             self._log_flash_event(timestamp, module_id, target_port, True)
             
-            return True, msg
+            return True, msg, result.stdout, ""
             
         except subprocess.TimeoutExpired:
             msg = "Firmware-Flash timeout"
             logger.error(msg)
             self._log_flash_event(datetime.now(timezone.utc).isoformat(), module_id, target_port, False, msg)
-            return False, msg
+            return False, msg, "", msg
             
         except Exception as e:
             msg = f"Fehler beim Flashen: {e}"
-            logger.error(msg)
+            logger.exception(msg)
             self._log_flash_event(datetime.now(timezone.utc).isoformat(), module_id, target_port, False, msg)
-            return False, msg
+            return False, msg, "", msg
     
     def _log_flash_event(self, timestamp: str, module: str, port: str, success: bool, error: str = ""):
         """Flash-Ereignis in Logdatei schreiben"""
@@ -803,7 +813,7 @@ class FirmwareManager:
             pass
         return "arduino_uno"
     
-    def compile_sketch(self, sketch_path: str, board: str = "arduino:avr:uno") -> tuple[bool, str]:
+    def compile_sketch(self, sketch_path: str, board: str = "arduino:avr:uno") -> tuple[bool, str, str, str]:
         """
         Kompiliert ein Arduino-Sketch ohne Upload.
         
@@ -812,7 +822,7 @@ class FirmwareManager:
             board: Board FQBN (z.B. arduino:avr:uno)
             
         Returns:
-            (success, message)
+            (success, message, output, error)
         """
         try:
             logger.info(f"Kompiliere Sketch: {sketch_path} für Board: {board}")
@@ -832,22 +842,23 @@ class FirmwareManager:
             )
             
             if result.returncode != 0:
-                msg = f"Kompilierung fehlgeschlagen:\n{result.stderr}"
-                logger.error(msg)
-                return False, msg
+                error_msg = result.stderr + "\n" + result.stdout
+                msg = "Kompilierung fehlgeschlagen"
+                logger.error(f"{msg}:\n{error_msg}")
+                return False, msg, result.stdout, error_msg
             
-            msg = "Sketch erfolgreich kompiliert"
+            msg = "✅ Sketch erfolgreich kompiliert"
             logger.info(msg)
-            return True, f"{msg}\n{result.stdout}"
+            return True, msg, result.stdout, ""
             
         except subprocess.TimeoutExpired:
             msg = "Kompilierung timeout (>120s)"
             logger.error(msg)
-            return False, msg
+            return False, msg, "", msg
         except Exception as e:
             msg = f"Fehler beim Kompilieren: {e}"
-            logger.error(msg)
-            return False, msg
+            logger.exception(msg)
+            return False, msg, "", msg
     
     def upload_hex(self, hex_file: str, board: str, port: str) -> tuple[bool, str]:
         """
@@ -897,7 +908,7 @@ class FirmwareManager:
             logger.error(msg)
             return False, msg
     
-    def compile_and_upload(self, sketch_path: str, board: str, port: str) -> tuple[bool, str]:
+    def compile_and_upload(self, sketch_path: str, board: str, port: str) -> tuple[bool, str, str, str]:
         """
         Kompiliert UND uploaded Sketch in einem Schritt.
         
@@ -913,9 +924,9 @@ class FirmwareManager:
             logger.info(f"Compile + Upload: {sketch_path} -> {port} (Board: {board})")
             
             # Compile
-            compile_success, compile_msg = self.compile_sketch(sketch_path, board)
+            compile_success, compile_msg, compile_output, compile_error = self.compile_sketch(sketch_path, board)
             if not compile_success:
-                return False, f"Kompilierung fehlgeschlagen: {compile_msg}"
+                return False, f"Kompilierung fehlgeschlagen: {compile_msg}", compile_output, compile_error
             
             # Upload direkt mit sketch_path (arduino-cli handled das)
             upload_cmd = [
@@ -934,27 +945,28 @@ class FirmwareManager:
             )
             
             if result.returncode != 0:
-                msg = f"Upload fehlgeschlagen:\n{result.stderr}"
-                logger.error(msg)
-                return False, msg
+                error_msg = result.stderr + "\n" + result.stdout
+                msg = "Upload fehlgeschlagen"
+                logger.error(f"{msg}:\n{error_msg}")
+                return False, msg, result.stdout, error_msg
             
-            msg = f"Sketch erfolgreich kompiliert und auf {port} uploaded"
+            msg = f"✅ Sketch erfolgreich kompiliert und auf {port} uploaded"
             logger.info(msg)
             
             # Log Event
             timestamp = datetime.now(timezone.utc).isoformat()
             self._log_flash_event(timestamp, sketch_path, port, True)
             
-            return True, f"{msg}\n{result.stdout}"
+            return True, msg, result.stdout, ""
             
         except subprocess.TimeoutExpired:
             msg = "Compile+Upload timeout"
             logger.error(msg)
-            return False, msg
+            return False, msg, "", msg
         except Exception as e:
             msg = f"Fehler bei Compile+Upload: {e}"
-            logger.error(msg)
-            return False, msg
+            logger.exception(msg)
+            return False, msg, "", msg
 
 
 class HardwareAgent:
@@ -1181,9 +1193,10 @@ class HardwareAgent:
         except Exception as e:
             logger.error(f"Fehler beim Löschen der Credentials: {e}")
     
-    def execute_command(self, command: Dict) -> tuple[bool, str]:
+    def execute_command(self, command: Dict) -> Dict[str, Any]:
         """
         Befehl ausführen und in Arduino-Befehle übersetzen.
+        Gibt dict mit status, message, error, output zurück.
         
         Unterstützte Befehle:
         - serial_command: Direkter Serial-Befehl ans Arduino (params.command)
@@ -1200,68 +1213,95 @@ class HardwareAgent:
             if cmd_type == "serial_command":
                 arduino_command = params.get("command", "")
                 if not arduino_command:
-                    return False, "Kein command in params angegeben"
+                    return {
+                        'status': 'failed',
+                        'error': 'Kein command in params angegeben',
+                        'output': ''
+                    }
                 
                 # An Arduino senden und auf Antwort warten
                 response = self.serial.send_command_with_response(arduino_command, timeout=5.0)
                 
                 if response is not None:
-                    return True, f"Arduino: {response}"
+                    return {
+                        'status': 'completed',
+                        'message': f"Arduino: {response}",
+                        'output': response
+                    }
                 else:
                     # Auch bei Timeout als Erfolg werten (Befehl wurde gesendet)
-                    return True, f"Command '{arduino_command}' sent (no response)"
+                    return {
+                        'status': 'completed',
+                        'message': f"Command '{arduino_command}' sent (no response)",
+                        'output': ''
+                    }
             
             # Legacy: Spray-Befehle
             elif cmd_type == "spray_on":
                 duration = params.get("duration", 0)
                 if duration > 0:
                     self.serial.send_command(f"Spray {int(duration * 1000)}")  # ms
-                    return True, f"Spray für {duration}s aktiviert"
+                    msg = f"Spray für {duration}s aktiviert"
                 else:
                     self.serial.send_command("SprayOn")
-                    return True, "Spray aktiviert"
+                    msg = "Spray aktiviert"
+                return {'status': 'completed', 'message': msg, 'output': msg}
                     
             elif cmd_type == "spray_off":
                 self.serial.send_command("SprayOff")
-                return True, "Spray deaktiviert"
+                msg = "Spray deaktiviert"
+                return {'status': 'completed', 'message': msg, 'output': msg}
             
             # Legacy: Füll-Befehle
             elif cmd_type == "fill_start":
                 target_liters = params.get("target_liters", 5.0)
                 self.serial.send_command(f"FillL {target_liters}")
-                return True, f"Füllen gestartet (Ziel: {target_liters}L)"
+                msg = f"Füllen gestartet (Ziel: {target_liters}L)"
+                return {'status': 'completed', 'message': msg, 'output': msg}
                 
             elif cmd_type == "fill_stop":
                 self.serial.send_command("CancelFill")
-                return True, "Füllen gestoppt"
+                msg = "Füllen gestoppt"
+                return {'status': 'completed', 'message': msg, 'output': msg}
             
             # Legacy: Status-Abfragen
             elif cmd_type == "request_status":
                 self.serial.send_command("Status")
-                return True, "Status angefordert"
+                msg = "Status angefordert"
+                return {'status': 'completed', 'message': msg, 'output': msg}
                 
             elif cmd_type == "request_tds":
                 self.serial.send_command("TDS")
-                return True, "TDS-Messung angefordert"
+                msg = "TDS-Messung angefordert"
+                return {'status': 'completed', 'message': msg, 'output': msg}
             
             # Firmware-Update (sichere Kapselung)
             elif cmd_type == "firmware_update":
                 module_id = params.get("module_id")
                 if not module_id:
-                    return False, "Kein module_id angegeben"
+                    return {
+                        'status': 'failed',
+                        'error': 'Kein module_id angegeben',
+                        'output': ''
+                    }
                 
                 # Serial-Verbindung schließen vor Flash
                 self.serial.close()
                 time.sleep(1)
                 
                 # Firmware flashen
-                success, message = self.firmware_mgr.flash_firmware(module_id)
+                success, message, output, error = self.firmware_mgr.flash_firmware(module_id)
                 
                 # Serial-Verbindung wiederherstellen
                 time.sleep(2)
                 self.serial = SerialProtocol(self.config.serial_port, self.config.baud_rate)
                 
-                return success, message
+                return {
+                    'status': 'completed' if success else 'failed',
+                    'message': message,
+                    'output': output,
+                    'error': error
+                }
             
             # Arduino-CLI Commands (von Laravel ArduinoCompileController)
             elif cmd_type == "arduino_compile":
@@ -1277,7 +1317,11 @@ class HardwareAgent:
                 sketch_name = params.get("sketch_name", "temp_sketch")
                 
                 if not code:
-                    return False, "Kein Arduino-Code angegeben"
+                    return {
+                        'status': 'failed',
+                        'error': 'Kein Arduino-Code angegeben',
+                        'output': ''
+                    }
                 
                 # Temporäres Sketch-Verzeichnis erstellen
                 import tempfile
@@ -1291,12 +1335,17 @@ class HardwareAgent:
                     logger.info(f"Sketch erstellt: {sketch_file}")
                     
                     # Arduino-CLI Compile
-                    success, message = self.firmware_mgr.compile_sketch(
+                    success, message, output, error = self.firmware_mgr.compile_sketch(
                         str(sketch_file),
                         board
                     )
                     
-                    return success, message
+                    return {
+                        'status': 'completed' if success else 'failed',
+                        'message': message,
+                        'output': output,
+                        'error': error
+                    }
                     
                 finally:
                     # Cleanup
@@ -1316,7 +1365,11 @@ class HardwareAgent:
                 port = params.get("port", self.config.serial_port)
                 
                 if not code:
-                    return False, "Kein Arduino-Code angegeben"
+                    return {
+                        'status': 'failed',
+                        'error': 'Kein Arduino-Code angegeben',
+                        'output': ''
+                    }
                 
                 # Temporäres Sketch-Verzeichnis erstellen
                 import tempfile
@@ -1334,13 +1387,18 @@ class HardwareAgent:
                     time.sleep(1)
                     
                     # Kompiliere + Upload in einem Schritt
-                    success, message = self.firmware_mgr.compile_and_upload(
+                    success, message, output, error = self.firmware_mgr.compile_and_upload(
                         str(sketch_file),
                         board,
                         port
                     )
                     
-                    return success, message
+                    return {
+                        'status': 'completed' if success else 'failed',
+                        'message': message,
+                        'output': output,
+                        'error': error
+                    }
                     
                 finally:
                     # Cleanup
@@ -1366,7 +1424,11 @@ class HardwareAgent:
                 sketch_name = params.get("sketch_name", "temp_sketch")
                 
                 if not code:
-                    return False, "Kein Arduino-Code angegeben"
+                    return {
+                        'status': 'failed',
+                        'error': 'Kein Arduino-Code angegeben',
+                        'output': ''
+                    }
                 
                 # Temporäres Sketch-Verzeichnis
                 import tempfile
@@ -1384,13 +1446,18 @@ class HardwareAgent:
                     time.sleep(1)
                     
                     # Compile + Upload
-                    success, message = self.firmware_mgr.compile_and_upload(
+                    success, message, output, error = self.firmware_mgr.compile_and_upload(
                         str(sketch_file),
                         board,
                         port
                     )
                     
-                    return success, message
+                    return {
+                        'status': 'completed' if success else 'failed',
+                        'message': message,
+                        'output': output,
+                        'error': error
+                    }
                     
                 finally:
                     # Cleanup & Serial wiederherstellen
@@ -1437,12 +1504,12 @@ class HardwareAgent:
                     # Optional: Command als 'executing' markieren (vor Ausführung)
                     # Aktuell nicht implementiert, da Laravel-API das nicht erwartet
                     
-                    # Befehl ausführen
-                    success, message = self.execute_command(cmd)
+                    # Befehl ausführen - gibt jetzt dict mit status, error, output zurück
+                    result = self.execute_command(cmd)
                     
                     # Ergebnis melden
                     if cmd_id:
-                        self.laravel.report_command_result(cmd_id, success, message)
+                        self.laravel.report_command_result(cmd_id, result)
                 
                 time.sleep(self.config.command_poll_interval)
                 
