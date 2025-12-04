@@ -1305,27 +1305,37 @@ class HardwareAgent:
             
             elif cmd_type == "arduino_upload":
                 """
-                Uploaded bereits kompilierten Code zum Arduino.
+                Kompiliert und uploaded Arduino-Code zum Arduino.
                 Params:
-                  - hex_file: Pfad zur kompilierten .hex Datei
+                  - code: Arduino Sketch Code (wird erst kompiliert, dann uploaded)
                   - board: Board-Type
                   - port: Serial-Port (optional, nutzt config wenn nicht angegeben)
                 """
-                hex_file = params.get("hex_file", "")
+                code = params.get("code", "")
                 board = params.get("board", "arduino:avr:uno")
                 port = params.get("port", self.config.serial_port)
                 
-                if not hex_file or not Path(hex_file).exists():
-                    return False, f"HEX-Datei nicht gefunden: {hex_file}"
+                if not code:
+                    return False, "Kein Arduino-Code angegeben"
                 
-                # Serial-Verbindung schließen
-                self.serial.close()
-                time.sleep(1)
+                # Temporäres Sketch-Verzeichnis erstellen
+                import tempfile
+                sketch_dir = Path(tempfile.mkdtemp(prefix="arduino_upload_"))
+                # FIX: Sketch-Datei MUSS gleichen Namen wie Verzeichnis haben!
+                sketch_file = sketch_dir / f"{sketch_dir.name}.ino"
                 
                 try:
-                    # Arduino-CLI Upload
-                    success, message = self.firmware_mgr.upload_hex(
-                        hex_file,
+                    # Code schreiben
+                    sketch_file.write_text(code)
+                    logger.info(f"Upload-Sketch erstellt: {sketch_file}")
+                    
+                    # Serial-Verbindung schließen
+                    self.serial.close()
+                    time.sleep(1)
+                    
+                    # Kompiliere + Upload in einem Schritt
+                    success, message = self.firmware_mgr.compile_and_upload(
+                        str(sketch_file),
                         board,
                         port
                     )
@@ -1333,6 +1343,10 @@ class HardwareAgent:
                     return success, message
                     
                 finally:
+                    # Cleanup
+                    import shutil
+                    shutil.rmtree(sketch_dir, ignore_errors=True)
+                    
                     # Serial-Verbindung wiederherstellen
                     time.sleep(2)
                     self.serial = SerialProtocol(self.config.serial_port, self.config.baud_rate)
