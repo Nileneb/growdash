@@ -3,6 +3,7 @@
 ## Änderungen durchgeführt
 
 ### 1. **execute_command() - Return Type geändert** ✅
+
 - **Von:** `tuple[bool, str]` (success, message)
 - **Zu:** `Dict[str, Any]` mit Feldern:
   - `status`: "completed" oder "failed"
@@ -11,6 +12,7 @@
   - `error`: Fehlerdetails (nur bei Fehler)
 
 **Betroffene Commands:**
+
 - `serial_command` ✅
 - `spray_on`, `spray_off` ✅
 - `fill_start`, `fill_stop` ✅
@@ -21,6 +23,7 @@
 - `arduino_compile_upload` ✅
 
 ### 2. **command_loop() - Result-Verarbeitung aktualisiert** ✅
+
 ```python
 # ALT:
 success, message = self.execute_command(cmd)
@@ -32,6 +35,7 @@ self.laravel.report_command_result(cmd_id, result)
 ```
 
 ### 3. **report_command_result() - Vollständiger Payload** ✅
+
 ```python
 # ALT:
 {
@@ -51,21 +55,25 @@ self.laravel.report_command_result(cmd_id, result)
 ### 4. **FirmwareManager - Alle Methoden aktualisiert** ✅
 
 #### flash_firmware()
+
 - **Return:** `tuple[bool, str, str, str]` (success, message, output, error)
 - Erfasst vollständigen stderr + stdout
 - Logged Fehler mit vollständigen Details
 
 #### compile_sketch()
+
 - **Return:** `tuple[bool, str, str, str]` (success, message, output, error)
 - Bei Fehler: Sende stderr + stdout an Laravel
 - Timeout-Handling mit Error-Message
 
 #### compile_and_upload()
+
 - **Return:** `tuple[bool, str, str, str]` (success, message, output, error)
 - Nutzt aktualisierte compile_sketch()
 - Erfasst Upload-Fehler mit vollständigen Details
 
 ### 5. **Error-Logging verbessert** ✅
+
 ```python
 # ALT:
 logger.error(msg)
@@ -80,6 +88,7 @@ return False, message, result.stdout, error_msg
 ## Payload-Beispiele
 
 ### ✅ Erfolgreiche Kompilierung
+
 ```json
 {
   "status": "completed",
@@ -90,6 +99,7 @@ return False, message, result.stdout, error_msg
 ```
 
 ### ❌ Kompilierungsfehler
+
 ```json
 {
   "status": "failed",
@@ -100,6 +110,7 @@ return False, message, result.stdout, error_msg
 ```
 
 ### ✅ Upload erfolgreich
+
 ```json
 {
   "status": "completed",
@@ -110,6 +121,7 @@ return False, message, result.stdout, error_msg
 ```
 
 ### ❌ Upload fehlgeschlagen
+
 ```json
 {
   "status": "failed",
@@ -122,12 +134,14 @@ return False, message, result.stdout, error_msg
 ## Testing-Anleitung
 
 ### 1. Agent starten
+
 ```bash
 cd /path/to/growdash
 python agent.py
 ```
 
 **Erwartete Logs:**
+
 ```
 2025-12-04 14:00:20 - INFO - ✅ Sketch erfolgreich kompiliert
 # ODER bei Fehler:
@@ -138,6 +152,7 @@ error: 'LO' was not declared in this scope
 ### 2. Frontend-Test durchführen
 
 Kompiliere einen Sketch mit Syntax-Error im Laravel-Dashboard:
+
 ```cpp
 void setup() {
   delay(LO LONG_ON);  // ← Error: LO not declared
@@ -145,11 +160,13 @@ void setup() {
 ```
 
 **Erwartete UI-Reaktion:**
+
 - ❌ Error-Modal zeigt vollständige Compiler-Ausgabe
 - 🤖 LLM-Analyse startet (wenn konfiguriert)
 - ✅ Fix-Vorschlag angeboten
 
 ### 3. Laravel-Logs prüfen
+
 ```bash
 php artisan tail
 
@@ -193,19 +210,24 @@ Der Payload wird automatisch richtig formatiert.
 ## Vorher/Nachher-Vergleich
 
 ### ❌ VORHER (Unvollständig)
+
 Laravel erhält:
+
 ```
 {
   "status": "failed",
   "result_message": "Kompilierung fehlgeschlagen"
 }
 ```
+
 → Frontend hat keine Fehler-Details  
 → LLM kann nicht analysieren  
-→ User sieht nur "Fehler" ohne Grund  
+→ User sieht nur "Fehler" ohne Grund
 
 ### ✅ NACHHER (Vollständig)
+
 Laravel erhält:
+
 ```
 {
   "status": "failed",
@@ -214,10 +236,11 @@ Laravel erhält:
   "error": "error: 'LO' was not declared\nerror: 'LONG_ON' was not declared..."
 }
 ```
+
 → Frontend zeigt vollständigen Fehler  
 → LLM-Analyse kann Fehler interpretieren  
 → Fix-Vorschlag automatisch generiert  
-→ User kann Fehler direkt im Editor sehen  
+→ User kann Fehler direkt im Editor sehen
 
 ## Performance-Auswirkungen
 
@@ -228,6 +251,7 @@ Laravel erhält:
 ## Kompatibilität
 
 ✅ **Vollständig rückwärts-kompatibel:**
+
 - Alte Befehle (`spray_on`, `fill_start`) funktionieren weiterhin
 - Neue Befehle (`arduino_compile`) nutzen neue Struktur
 - Laravel Backend wird automatisch mit neuen Feldern versorgt
