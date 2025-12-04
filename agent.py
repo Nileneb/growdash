@@ -11,6 +11,7 @@ import time
 import json
 import logging
 import subprocess
+import shutil
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from queue import Queue
