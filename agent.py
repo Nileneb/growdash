@@ -4,15 +4,16 @@ GrowDash Hardware Agent - CLEAN VERSION
 Einziger Zweck: Hardware-Brücke zwischen Laravel und Arduino.
 
 WAS WIR TUN:
-- Serial-Port öffnen und Befehle senden
+- Serial-Port öffnen und Befehle senden (Request/Response)
 - Arduino-CLI aufrufen (compile/upload)
 - USB-Ports scannen
-- Telemetrie/Commands/Heartbeat mit Laravel synchronisieren
+- Commands von Laravel abholen und ausführen
+- Heartbeat senden (Device online)
 
 WAS WIR NICHT TUN:
 - Business-Logik (-> Laravel)
 - Daten speichern (-> Laravel)
-- Onboarding/Pairing (-> bootstrap.py)
+- Automatische Telemetrie (Arduino antwortet NUR auf Commands!)
 """
 
 import os
@@ -25,9 +26,6 @@ import threading
 import requests
 from typing import Dict, List, Optional, Any
 from pathlib import Path
-from queue import Queue
-from datetime import datetime, timezone
-from collections import deque
 
 from pydantic_settings import BaseSettings
 from pydantic import Field
@@ -48,7 +46,6 @@ class Config(BaseSettings):
     device_token: str = Field(default="")
     serial_port: str = Field(default="/dev/ttyACM0")
     baud_rate: int = Field(default=9600)
-    telemetry_interval: int = Field(default=10)
     command_poll_interval: int = Field(default=5)
     arduino_cli_path: str = Field(default="/usr/local/bin/arduino-cli")
     
@@ -62,13 +59,12 @@ class Config(BaseSettings):
 # ============================================================================
 
 class SerialPort:
-    """Einfache Serial-Kommunikation"""
+    """Einfache Serial-Kommunikation - NUR Request/Response!"""
     
     def __init__(self, port: str, baud: int):
         self.port = port
         self.baud = baud
         self.serial = None
-        self.telemetry_queue = Queue()
         self._connect()
     
     def _connect(self):
@@ -76,28 +72,11 @@ class SerialPort:
             import serial
             self.serial = serial.Serial(self.port, self.baud, timeout=1)
             logger.info(f"✅ Serial verbunden: {self.port}")
-            threading.Thread(target=self._read_loop, daemon=True).start()
         except Exception as e:
             logger.error(f"❌ Serial-Fehler: {e}")
     
-    def _read_loop(self):
-        while True:
-            try:
-                if self.serial and self.serial.in_waiting:
-                    line = self.serial.readline().decode('utf-8').strip()
-                    if ':' in line:
-                        key, value = line.split(':', 1)
-                        self.telemetry_queue.put({
-                            "type": key.strip(),
-                            "value": value.strip(),
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        })
-            except:
-                pass
-            time.sleep(0.1)
-    
     def send(self, command: str) -> Optional[str]:
-        """Befehl senden und optional auf Antwort warten"""
+        """Befehl senden und auf Antwort warten"""
         try:
             if self.serial:
                 self.serial.write(f"{command}\n".encode())
@@ -108,13 +87,6 @@ class SerialPort:
         except Exception as e:
             logger.error(f"Send failed: {e}")
             return None
-    
-    def get_telemetry(self, max_items: int = 100) -> List[Dict]:
-        """Hole Telemetrie aus Queue"""
-        items = []
-        while not self.telemetry_queue.empty() and len(items) < max_items:
-            items.append(self.telemetry_queue.get())
-        return items
     
     def close(self):
         if self.serial:
@@ -242,18 +214,6 @@ class LaravelClient:
         except:
             return False
     
-    def send_telemetry(self, data: List[Dict]) -> bool:
-        """Telemetrie senden"""
-        try:
-            response = self.session.post(
-                f"{self.base_url}/telemetry",
-                json={"telemetry": data},
-                timeout=10
-            )
-            return response.status_code == 200
-        except:
-            return False
-    
     def get_commands(self) -> List[Dict]:
         """Pending Commands abrufen"""
         try:
@@ -338,14 +298,6 @@ class Agent:
         else:
             return {'status': 'failed', 'error': f'Unknown command: {cmd_type}'}
     
-    def _telemetry_loop(self):
-        """Telemetrie an Laravel senden"""
-        while not self._stop.is_set():
-            data = self.serial.get_telemetry()
-            if data:
-                self.laravel.send_telemetry(data)
-            time.sleep(self.config.telemetry_interval)
-    
     def _command_loop(self):
         """Commands von Laravel abrufen"""
         while not self._stop.is_set():
@@ -374,9 +326,8 @@ class Agent:
             return "127.0.0.1"
     
     def run(self):
-        """Agent starten"""
+        """Agent starten - NUR Commands + Heartbeat!"""
         threads = [
-            threading.Thread(target=self._telemetry_loop, daemon=True),
             threading.Thread(target=self._command_loop, daemon=True),
             threading.Thread(target=self._heartbeat_loop, daemon=True)
         ]
