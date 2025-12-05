@@ -1,53 +1,43 @@
 #!/bin/bash
-# Skript zum Starten des GrowDash Hardware-Agents
+# GrowDash Agent starten
 
-# Zum Projektverzeichnis wechseln
 cd "$(dirname "$0")"
 
-# Virtuelle Umgebung bereitstellen (verwende 'venv' statt '.venv')
+# Virtual Environment aktivieren
 if [ ! -d "venv" ]; then
-    echo "Erstelle virtuelle Umgebung (venv)..."
-    python3 -m venv venv || { echo "❌ Konnte venv nicht erstellen"; exit 1; }
+    echo "❌ Virtual Environment fehlt!"
+    echo "Bitte erst ./setup.sh ausführen"
+    exit 1
 fi
 
 source venv/bin/activate
-echo "Virtuelle Umgebung (venv) aktiviert."
 
-# .env Datei prüfen
+# .env prüfen
 if [ ! -f ".env" ]; then
-    echo ""
-    echo "FEHLER: .env Datei nicht gefunden!"
-    echo "Erstelle .env aus Template..."
-    cp .env.example .env
-    echo "✅ .env erstellt"
-    echo ""
+    echo "❌ .env fehlt!"
+    echo "Bitte erst ./setup.sh ausführen"
+    exit 1
 fi
 
-# Prüfen ob Device konfiguriert ist
-DEVICE_ID=$(grep "^DEVICE_PUBLIC_ID=" .env | cut -d '=' -f2)
-DEVICE_TOKEN=$(grep "^DEVICE_TOKEN=" .env | cut -d '=' -f2)
+# Credentials prüfen
+if ! grep -q "^DEVICE_PUBLIC_ID=.\+" .env || ! grep -q "^DEVICE_TOKEN=.\+" .env; then
+    echo ""
+    echo "❌ DEVICE_PUBLIC_ID oder DEVICE_TOKEN fehlt in .env!"
+    echo ""
+    echo "Hole Device-Credentials von Laravel:"
+    echo "  1. https://grow.linn.games/devices"
+    echo "  2. Neues Device erstellen"
+    echo "  3. ID + Token in .env eintragen"
+    echo ""
+    exit 1
+fi
 
-# Fehlende Credentials sind ok – der Agent startet den Onboarding-Wizard automatisch
+echo ""
+echo "🚀 Starte GrowDash Agent..."
+echo ""
 
-# Arduino-CLI prüfen und optional installieren
-check_arduino_cli() {
-    ARDUINO_CLI_PATH=$(grep "^ARDUINO_CLI_PATH=" .env 2>/dev/null | cut -d '=' -f2)
-    
-    # Fallback auf Standard-Pfad
-    if [ -z "$ARDUINO_CLI_PATH" ]; then
-        ARDUINO_CLI_PATH="/usr/local/bin/arduino-cli"
-    fi
-    
-    if [ ! -f "$ARDUINO_CLI_PATH" ]; then
-        echo ""
-        echo "⚠️  Arduino-CLI nicht gefunden: $ARDUINO_CLI_PATH"
-        echo ""
-        echo "Arduino-CLI wird für Firmware-Updates benötigt."
-        echo "Möchtest du es jetzt installieren? (j/n)"
-        read -r INSTALL_CLI
-        
-        if [ "$INSTALL_CLI" = "j" ] || [ "$INSTALL_CLI" = "J" ]; then
-            echo ""
+# Agent starten
+python agent.py
             echo "📦 Installiere Arduino-CLI..."
             
             # Detect architecture

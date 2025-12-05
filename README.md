@@ -12,11 +12,13 @@
 ## Setup
 
 1. **Install Dependencies:**
+
 ```bash
 pip install -r requirements.txt
 ```
 
 2. **Configure `.env`:**
+
 ```bash
 LARAVEL_BASE_URL=https://grow.linn.games
 DEVICE_PUBLIC_ID=your-device-id
@@ -27,6 +29,7 @@ ARDUINO_CLI_PATH=/usr/local/bin/arduino-cli
 ```
 
 3. **Run Agent:**
+
 ```bash
 python agent.py
 ```
@@ -47,6 +50,7 @@ python local_api.py
 ```
 
 Endpoints:
+
 - `GET /ports` - Serial-Ports scannen
 - `GET /status` - Agent-Status
 - `GET /config` - Aktuelle Config
@@ -111,15 +115,12 @@ USB_SCAN_INTERVAL=12000  # Scan alle 12000s (3.33h)
 1. **Automatischer USB-Scan**
    - Beim Start: Sofortiger Scan aller verfügbaren USB-Ports
    - Periodisch: Alle 12000 Sekunden (konfigurierbar)
-   
 2. **Device-Erkennung**
    - Erkennt Arduino/USB-Serial-Devices automatisch
    - Jedes Device erhält eindeutige ID: `growdash-{vendor_id}-{product_id}-{port}`
-   
 3. **Separate Device-Instanzen**
    - Für jeden erkannten Port wird ein eigener Thread gestartet
    - Jedes Device hat separate SerialProtocol, LaravelClient, HardwareAgent
-   
 4. **Hot-Plug Support**
    - Neue Devices: Werden automatisch erkannt und gestartet
    - Getrennte Devices: Thread wird sauber beendet, Device aus Laravel abgemeldet
@@ -235,14 +236,14 @@ DEVICE_TOKEN=xxx
 
 Agent kommuniziert mit Laravel-Backend:
 
-| Endpoint | Methode | Beschreibung |
-|----------|---------|--------------|
-| `/commands/pending` | GET | Holt ausstehende Commands |
-| `/commands/{id}/result` | POST | Meldet Command-Ergebnis |
-| `/telemetry` | POST | Sendet Sensor-Daten |
-| `/heartbeat` | POST | Meldet "online" Status |
-| `/capabilities` | POST | Sendet Board/Sensor-Info |
-| `/logs` | POST | Sendet Log-Batch |
+| Endpoint                | Methode | Beschreibung              |
+| ----------------------- | ------- | ------------------------- |
+| `/commands/pending`     | GET     | Holt ausstehende Commands |
+| `/commands/{id}/result` | POST    | Meldet Command-Ergebnis   |
+| `/telemetry`            | POST    | Sendet Sensor-Daten       |
+| `/heartbeat`            | POST    | Meldet "online" Status    |
+| `/capabilities`         | POST    | Sendet Board/Sensor-Info  |
+| `/logs`                 | POST    | Sendet Log-Batch          |
 
 📖 **Details:** [docs/LARAVEL_ENDPOINTS.md](docs/LARAVEL_ENDPOINTS.md)
 
@@ -250,12 +251,12 @@ Agent kommuniziert mit Laravel-Backend:
 
 Agent sendet Commands an Arduino und wartet auf Response:
 
-| Command | Arduino-Antwort | Beschreibung |
-|---------|-----------------|--------------|
-| `status` | `dist_cm=20.3 liters=33.53 Tab=OFF...` | Kompletter Status |
-| `TDS` | `TDS=660 TempC=22.50 ADC=351 V=1.714` | TDS-Sensor |
-| `Spray 120000` | (Timeout nach 5s) | Sprühe 120s |
-| `Fill 60000` | (Timeout nach 5s) | Fülle 60s |
+| Command        | Arduino-Antwort                        | Beschreibung      |
+| -------------- | -------------------------------------- | ----------------- |
+| `status`       | `dist_cm=20.3 liters=33.53 Tab=OFF...` | Kompletter Status |
+| `TDS`          | `TDS=660 TempC=22.50 ADC=351 V=1.714`  | TDS-Sensor        |
+| `Spray 120000` | (Timeout nach 5s)                      | Sprühe 120s       |
+| `Fill 60000`   | (Timeout nach 5s)                      | Fülle 60s         |
 
 **Wichtig:** Actuator-Commands (Spray, Fill) laufen länger als 5s → Timeout ist normal.
 
