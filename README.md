@@ -1,5 +1,68 @@
 # GrowDash Hardware Agent
 
+**Simple Hardware Bridge: Laravel ↔ Arduino**
+
+## Was macht der Agent?
+
+- 🔌 **Serial-Kommunikation** mit Arduino
+- 🛠️ **Arduino-CLI** Wrapper (compile/upload)
+- 📡 **HTTP-Client** zu Laravel (commands/telemetry/heartbeat)
+- 🔍 **Port-Scanner** für verfügbare Serial-Devices
+
+## Setup
+
+1. **Install Dependencies:**
+```bash
+pip install -r requirements.txt
+```
+
+2. **Configure `.env`:**
+```bash
+LARAVEL_BASE_URL=https://grow.linn.games
+DEVICE_PUBLIC_ID=your-device-id
+DEVICE_TOKEN=your-token
+SERIAL_PORT=/dev/ttyACM0
+BAUD_RATE=9600
+ARDUINO_CLI_PATH=/usr/local/bin/arduino-cli
+```
+
+3. **Run Agent:**
+```bash
+python agent.py
+```
+
+## Commands
+
+Agent führt Commands aus Laravel aus:
+
+- `serial_command` - Direkt ans Arduino
+- `arduino_compile` - Code kompilieren
+- `arduino_upload` - Code kompilieren + uploaden
+- `scan_ports` - Verfügbare Serial-Ports scannen
+
+## Local API (Debug)
+
+```bash
+python local_api.py
+```
+
+Endpoints:
+- `GET /ports` - Serial-Ports scannen
+- `GET /status` - Agent-Status
+- `GET /config` - Aktuelle Config
+
+## Architecture
+
+```
+Laravel Backend
+    ↕ HTTP (commands/telemetry/heartbeat)
+Hardware Agent (agent.py)
+    ↕ Serial
+Arduino/Microcontroller
+```
+
+**Simple. Clean. No bullshit.**
+
 Python-Agent für automatisierte Growbox-Steuerung. Läuft auf Raspberry Pi, kommuniziert mit Arduino über Serial und mit Laravel-Backend via HTTPS.
 
 ## 🚀 Quick Start
