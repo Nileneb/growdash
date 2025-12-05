@@ -3,9 +3,11 @@
 ## 🎯 Zwei Onboarding-Modi
 
 ### Modus 1: Pairing-Code-Flow (Empfohlen, Standard)
+
 → Agent generiert Code, User gibt ihn in Web-UI ein
 
 ### Modus 2: Direct-Login-Flow (Power-User, Dev)
+
 → Agent fragt nach Email+Passwort, registriert sich automatisch
 
 ---
@@ -17,6 +19,7 @@
 **POST** `/api/auth/login`
 
 **Request:**
+
 ```json
 {
   "email": "user@example.com",
@@ -25,6 +28,7 @@
 ```
 
 **Response (200):**
+
 ```json
 {
   "success": true,
@@ -38,6 +42,7 @@
 ```
 
 **Laravel-Implementierung (Sanctum):**
+
 ```php
 // app/Http/Controllers/Auth/ApiAuthController.php
 
@@ -47,19 +52,19 @@ public function login(Request $request)
         'email' => 'required|email',
         'password' => 'required',
     ]);
-    
+
     if (!Auth::attempt($credentials)) {
         return response()->json([
             'success' => false,
             'message' => 'Invalid credentials'
         ], 401);
     }
-    
+
     $user = Auth::user();
-    
+
     // Token erstellen (wird nach Device-Registrierung revoked!)
     $token = $user->createToken('agent-bootstrap')->plainTextToken;
-    
+
     return response()->json([
         'success' => true,
         'token' => $token,
@@ -77,9 +82,11 @@ public function login(Request $request)
 **POST** `/api/growdash/devices/register`
 
 **Headers:**
+
 - `Authorization: Bearer 1|abc123xyz...`
 
 **Request:**
+
 ```json
 {
   "name": "GrowDash Pi Kitchen",
@@ -90,6 +97,7 @@ public function login(Request $request)
 ```
 
 **Response (201):**
+
 ```json
 {
   "success": true,
@@ -100,6 +108,7 @@ public function login(Request $request)
 ```
 
 **Laravel-Implementierung:**
+
 ```php
 // app/Http/Controllers/GrowDash/DeviceController.php
 
@@ -111,16 +120,16 @@ public function register(Request $request)
         'version' => 'nullable|string',
         'hostname' => 'nullable|string',
     ]);
-    
+
     // User aus Token
     $user = auth()->user();
-    
+
     // Device-ID generieren
     $publicId = 'growdash-' . Str::random(4);
-    
+
     // Agent-Token generieren
     $agentToken = Str::random(64);
-    
+
     // Device erstellen
     $device = Device::create([
         'user_id' => $user->id,
@@ -130,7 +139,7 @@ public function register(Request $request)
         'device_info' => $validated,
         'status' => 'active',
     ]);
-    
+
     // Klartext-Token nur im Response zurückgeben!
     return response()->json([
         'success' => true,
@@ -146,9 +155,11 @@ public function register(Request $request)
 **POST** `/api/auth/logout`
 
 **Headers:**
+
 - `Authorization: Bearer 1|abc123xyz...`
 
 **Response (200):**
+
 ```json
 {
   "success": true,
@@ -157,12 +168,13 @@ public function register(Request $request)
 ```
 
 **Laravel-Implementierung:**
+
 ```php
 public function logout(Request $request)
 {
     // Aktuellen Token revoken
     $request->user()->currentAccessToken()->delete();
-    
+
     return response()->json([
         'success' => true,
         'message' => 'Logged out successfully',
@@ -184,6 +196,7 @@ Damit liegt kein User-Token auf dem Device.
 Erstellt einen neuen Pairing-Request.
 
 **Request:**
+
 ```json
 {
   "device_id": "growdash-a1b2",
@@ -196,6 +209,7 @@ Erstellt einen neuen Pairing-Request.
 ```
 
 **Response (201):**
+
 ```json
 {
   "success": true,
@@ -206,6 +220,7 @@ Erstellt einen neuen Pairing-Request.
 ```
 
 **Laravel-Implementierung:**
+
 ```php
 // app/Http/Controllers/GrowDash/PairingController.php
 
@@ -216,7 +231,7 @@ public function init(Request $request)
         'pairing_code' => 'required|string|size:6',
         'device_info' => 'nullable|array',
     ]);
-    
+
     // Pairing-Request erstellen (läuft nach 5 Minuten ab)
     $pairing = DevicePairing::create([
         'device_id' => $validated['device_id'],
@@ -225,7 +240,7 @@ public function init(Request $request)
         'status' => 'pending',
         'expires_at' => now()->addMinutes(5),
     ]);
-    
+
     return response()->json([
         'success' => true,
         'message' => 'Pairing initiiert',
@@ -240,10 +255,12 @@ public function init(Request $request)
 **GET** `/api/growdash/agent/pairing/status`
 
 Query-Parameter:
+
 - `device_id` (required)
 - `pairing_code` (required)
 
 **Response (200) - Pending:**
+
 ```json
 {
   "status": "pending",
@@ -252,6 +269,7 @@ Query-Parameter:
 ```
 
 **Response (200) - Paired:**
+
 ```json
 {
   "status": "paired",
@@ -262,6 +280,7 @@ Query-Parameter:
 ```
 
 **Response (200) - Expired/Rejected:**
+
 ```json
 {
   "status": "expired"
@@ -269,6 +288,7 @@ Query-Parameter:
 ```
 
 **Laravel-Implementierung:**
+
 ```php
 public function status(Request $request)
 {
@@ -276,27 +296,27 @@ public function status(Request $request)
         'device_id' => 'required|string',
         'pairing_code' => 'required|string',
     ]);
-    
+
     $pairing = DevicePairing::where('device_id', $validated['device_id'])
         ->where('pairing_code', $validated['pairing_code'])
         ->first();
-    
+
     if (!$pairing) {
         return response()->json(['status' => 'not_found'], 404);
     }
-    
+
     // Abgelaufen?
     if ($pairing->expires_at < now()) {
         $pairing->update(['status' => 'expired']);
         return response()->json(['status' => 'expired']);
     }
-    
+
     // Status zurückgeben
     $response = [
         'status' => $pairing->status,
         'device_id' => $pairing->device_id,
     ];
-    
+
     // Wenn gepairt, Token zurückgeben
     if ($pairing->status === 'paired' && $pairing->device) {
         // WICHTIG: Nur einmalig den Klartext-Token zurückgeben!
@@ -304,7 +324,7 @@ public function status(Request $request)
         $response['agent_token'] = $pairing->plaintext_token;
         $response['user_email'] = $pairing->device->user->email ?? null;
     }
-    
+
     return response()->json($response);
 }
 ```
@@ -316,6 +336,7 @@ public function status(Request $request)
 Wird vom eingeloggten User in der Web-UI aufgerufen.
 
 **Request:**
+
 ```json
 {
   "pairing_code": "123456"
@@ -323,6 +344,7 @@ Wird vom eingeloggten User in der Web-UI aufgerufen.
 ```
 
 **Response (200):**
+
 ```json
 {
   "success": true,
@@ -332,6 +354,7 @@ Wird vom eingeloggten User in der Web-UI aufgerufen.
 ```
 
 **Laravel-Implementierung:**
+
 ```php
 // app/Http/Controllers/DeviceController.php
 
@@ -340,15 +363,15 @@ public function pair(Request $request)
     $validated = $request->validate([
         'pairing_code' => 'required|string|size:6',
     ]);
-    
+
     $pairing = DevicePairing::where('pairing_code', $validated['pairing_code'])
         ->where('status', 'pending')
         ->where('expires_at', '>', now())
         ->firstOrFail();
-    
+
     // Token generieren
     $token = Str::random(64);
-    
+
     // Device erstellen
     $device = Device::create([
         'user_id' => auth()->id(),
@@ -357,14 +380,14 @@ public function pair(Request $request)
         'device_info' => $pairing->device_info,
         'status' => 'active',
     ]);
-    
+
     // Pairing aktualisieren
     $pairing->update([
         'status' => 'paired',
         'device_id' => $device->id,
         'plaintext_token' => $token, // Nur temporär für Polling!
     ]);
-    
+
     return response()->json([
         'success' => true,
         'device_id' => $device->public_id,
@@ -394,20 +417,20 @@ class DeviceAuth
     {
         $deviceId = $request->header('X-Device-ID');
         $token = $request->header('X-Device-Token');
-        
+
         if (!$deviceId || !$token) {
             return response()->json(['error' => 'Missing credentials'], 401);
         }
-        
+
         $device = Device::where('public_id', $deviceId)->first();
-        
+
         if (!$device || !Hash::check($token, $device->agent_token)) {
             return response()->json(['error' => 'Invalid credentials'], 401);
         }
-        
+
         // Device an Request anhängen
         $request->merge(['device' => $device]);
-        
+
         return $next($request);
     }
 }
@@ -418,10 +441,12 @@ class DeviceAuth
 **POST** `/api/growdash/agent/telemetry`
 
 Headers:
+
 - `X-Device-ID: growdash-a1b2`
 - `X-Device-Token: xxx`
 
 **Request:**
+
 ```json
 {
   "device_id": "growdash-a1b2",
@@ -442,10 +467,12 @@ Headers:
 **GET** `/api/growdash/agent/commands/pending`
 
 Headers:
+
 - `X-Device-ID: growdash-a1b2`
 - `X-Device-Token: xxx`
 
 **Response:**
+
 ```json
 {
   "success": true,
@@ -466,15 +493,107 @@ Headers:
 **POST** `/api/growdash/agent/commands/{id}/result`
 
 Headers:
+
 - `X-Device-ID: growdash-a1b2`
 - `X-Device-Token: xxx`
 
 **Request:**
+
 ```json
 {
   "success": true,
   "message": "Spray für 5s aktiviert",
   "timestamp": "2025-12-01T10:30:05Z"
+}
+```
+
+### 4. Verfügbare Serial-Ports abrufen (NEU)
+
+**GET** `/api/growdash/agent/ports`
+
+Headers:
+
+- `X-Device-ID: growdash-a1b2`
+- `X-Device-Token: xxx`
+
+**Response (200):**
+
+```json
+{
+  "success": true,
+  "ports": [
+    {
+      "port": "/dev/ttyACM0",
+      "description": "Arduino Uno",
+      "vendor_id": "2341",
+      "product_id": "0043",
+      "manufacturer": "Arduino LLC",
+      "serial_number": "85739313137351F06191"
+    },
+    {
+      "port": "/dev/ttyUSB0",
+      "description": "USB-Serial Controller",
+      "vendor_id": "1a86",
+      "product_id": "7523",
+      "manufacturer": "QinHeng Electronics",
+      "serial_number": null
+    }
+  ],
+  "count": 2
+}
+```
+
+**Response (503) - Agent nicht erreichbar:**
+
+```json
+{
+  "error": "Device unreachable",
+  "message": "Could not connect to device"
+}
+```
+
+**Laravel-Implementierung:**
+
+```php
+// app/Http/Controllers/GrowDash/AgentController.php
+
+public function getPorts(Request $request)
+{
+    $device = $request->attributes->get('device');
+
+    // Agent's Local API ansprechen (wenn IP bekannt)
+    if ($device->ip_address) {
+        try {
+            $response = Http::timeout(10)
+                ->get("http://{$device->ip_address}:8000/ports");
+
+            if ($response->successful()) {
+                return response()->json($response->json());
+            }
+
+            return response()->json([
+                'error' => 'Failed to fetch ports from device',
+                'status' => $response->status()
+            ], 502);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'error' => 'Device unreachable',
+                'message' => 'Could not connect to device'
+            ], 503);
+        }
+    }
+
+    // Fallback - Standard-Ports
+    return response()->json([
+        'success' => true,
+        'ports' => [
+            ['port' => '/dev/ttyACM0', 'description' => 'Arduino Uno (Standard)'],
+            ['port' => '/dev/ttyUSB0', 'description' => 'USB-Serial (Standard)'],
+        ],
+        'count' => 2,
+        'fallback' => true
+    ]);
 }
 ```
 
@@ -498,28 +617,29 @@ Route::prefix('auth')->group(function () {
 
 // ===== GrowDash Agent Endpoints =====
 Route::prefix('growdash')->group(function () {
-    
+
     // --- Agent Onboarding ---
-    
+
     // Pairing-Code-Flow (keine Auth)
     Route::prefix('agent/pairing')->group(function () {
         Route::post('/init', [PairingController::class, 'init']);
         Route::get('/status', [PairingController::class, 'status']);
     });
-    
+
     // Direct-Login-Flow (User-Auth)
     Route::middleware('auth:sanctum')->group(function () {
         Route::post('/devices/register', [DeviceController::class, 'register']);
         Route::post('/devices/pair', [DeviceController::class, 'pair']); // Web-UI
     });
-    
+
     // --- Agent Runtime (Device-Token-Auth) ---
-    
+
     Route::prefix('agent')->middleware('device.auth')->group(function () {
         Route::post('/telemetry', [AgentController::class, 'telemetry']);
         Route::get('/commands/pending', [AgentController::class, 'pendingCommands']);
         Route::post('/commands/{id}/result', [AgentController::class, 'commandResult']);
         Route::post('/logs', [AgentController::class, 'logs']);
+        Route::get('/ports', [AgentController::class, 'getPorts']); // NEW: Port-Scan
     });
 });
 ```
@@ -541,7 +661,7 @@ Schema::create('device_pairings', function (Blueprint $table) {
     $table->string('plaintext_token')->nullable(); // Nur temporär!
     $table->timestamp('expires_at');
     $table->timestamps();
-    
+
     $table->index(['pairing_code', 'status']);
 });
 
@@ -557,7 +677,7 @@ Schema::create('devices', function (Blueprint $table) {
     $table->enum('status', ['active', 'inactive', 'disabled'])->default('active');
     $table->timestamp('last_seen_at')->nullable();
     $table->timestamps();
-    
+
     $table->index('public_id');
 });
 ```

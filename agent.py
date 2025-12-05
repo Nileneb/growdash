@@ -1276,6 +1276,41 @@ class HardwareAgent:
                 msg = "TDS-Messung angefordert"
                 return {'status': 'completed', 'message': msg, 'output': msg}
             
+            # Port-Scan Befehl
+            elif cmd_type == "scan_ports":
+                try:
+                    from usb_device_manager import USBScanner
+                    ports = USBScanner.scan_ports()
+                    
+                    ports_list = []
+                    for port_info in ports:
+                        ports_list.append({
+                            "port": port_info.port,
+                            "description": port_info.description or "Unknown",
+                            "vendor_id": port_info.vendor_id,
+                            "product_id": port_info.product_id,
+                            "board_type": port_info.board_type
+                        })
+                    
+                    result_json = json.dumps({
+                        "success": True,
+                        "ports": ports_list,
+                        "count": len(ports_list)
+                    })
+                    
+                    return {
+                        'status': 'completed',
+                        'message': f'{len(ports_list)} ports found',
+                        'output': result_json
+                    }
+                except Exception as e:
+                    logger.error(f"Port scan failed: {e}")
+                    return {
+                        'status': 'failed',
+                        'error': f'Port scan error: {str(e)}',
+                        'output': ''
+                    }
+            
             # Firmware-Update (sichere Kapselung)
             elif cmd_type == "firmware_update":
                 module_id = params.get("module_id")
