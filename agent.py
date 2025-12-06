@@ -11,7 +11,10 @@ import time
 import json
 import logging
 import subprocess
-from typing import Dict, List, Optional, Any
+import tempfile
+import shutil
+from contextlib import contextmanager
+from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
 from queue import Queue
 from pathlib import Path
@@ -34,7 +37,7 @@ class AgentConfig(BaseSettings):
     """Konfiguration aus .env Datei laden"""
     
     # Laravel Backend
-    laravel_base_url: str = Field(default="http://localhost")
+    laravel_base_url: str = Field(default="https://grow.linn.games")
     # Agent-API Pfad (z. B. /api/growdash/agent)
     laravel_api_path: str = Field(default="/api/growdash/agent")
     # Onboarding Modus: PAIRING | DIRECT_LOGIN | PRECONFIGURED
@@ -230,6 +233,8 @@ class LaravelClient:
         self.set_device_headers(config.device_public_id, config.device_token)
         # Bootstrap helpers cache
         self._cached_bootstrap_id: Optional[str] = None
+        # FirmwareManager reference wird später in HardwareAgent gesetzt
+        self._firmware_mgr: Optional['FirmwareManager'] = None
 
     # -------- Helper Methods (Bootstrap / Board Detection) --------
     def _make_bootstrap_id(self) -> str:
@@ -241,27 +246,16 @@ class LaravelClient:
         self._cached_bootstrap_id = f"growdash-{host}-{suffix}"
         return self._cached_bootstrap_id
 
+    def _get_device_name(self) -> str:
+        """Generischer Device-Name basierend auf Hostname."""
+        import socket
+        return f"GrowDash {socket.gethostname()}"
+    
     def _detect_board_name_for_bootstrap(self) -> str:
-        """Lightweight board detection for bootstrap payload."""
-        try:
-            # Try arduino-cli board list
-            cli = self.config.arduino_cli_path
-            if cli and os.path.exists(cli):
-                res = subprocess.run([cli, 'board', 'list'], capture_output=True, text=True, timeout=6)
-                out = (res.stdout or '') + (res.stderr or '')
-                low = out.lower()
-                if 'arduino uno' in low:
-                    return 'arduino_uno'
-                if 'arduino mega' in low:
-                    return 'arduino_mega'
-                if 'arduino nano' in low:
-                    return 'arduino_nano'
-                if 'esp32' in low:
-                    return 'esp32'
-                if 'esp8266' in low:
-                    return 'esp8266'
-        except Exception:
-            pass
+        """Delegiert Board-Erkennung an FirmwareManager für zentrale Verwaltung."""
+        if hasattr(self, '_firmware_mgr') and self._firmware_mgr:
+            return self._firmware_mgr.detect_board_name()
+        # Fallback wenn FirmwareManager noch nicht initialisiert
         return 'arduino_uno'
 
     def set_device_headers(self, device_id: str, device_token: str):
@@ -276,13 +270,10 @@ class LaravelClient:
     def start_pairing_bootstrap(self) -> Optional[Dict[str, Any]]:
         """/api/agents/bootstrap mit Details aufrufen und Bootstrap-Code erhalten"""
         url = f"{self.config.laravel_base_url}/api/agents/bootstrap"
-        import socket
-        device_name = f"GrowDash {socket.gethostname()}"
-            
         try:
             payload = {
                 "bootstrap_id": self._make_bootstrap_id(),
-                "name": device_name,
+                "name": self._get_device_name(),
                 "board_type": self._detect_board_name_for_bootstrap(),
                 "capabilities": {
                     "sensors": ["water_level", "tds", "temperature"],
@@ -324,14 +315,11 @@ class LaravelClient:
     def register_device_from_agent(self, bearer_token: str) -> Optional[Dict[str, Any]]:
         """/api/growdash/devices/register → public_id + agent_token (PLAINTEXT)"""
         url = f"{self.config.laravel_base_url}/api/growdash/devices/register"
-        import socket
-        device_name = f"GrowDash {socket.gethostname()}"
-            
         try:
             headers = {"Authorization": f"Bearer {bearer_token}", "Content-Type": "application/json"}
             payload = {
                 "bootstrap_id": self._make_bootstrap_id(),
-                "name": device_name,
+                "name": self._get_device_name(),
                 "board_type": self._detect_board_name_for_bootstrap(),
                 "capabilities": {
                     "board_name": self._detect_board_name_for_bootstrap(),
@@ -521,7 +509,58 @@ class FirmwareManager:
         if not os.path.exists(self.arduino_cli):
             logger.warning(f"Arduino-CLI nicht gefunden: {self.arduino_cli}")
     
-    def flash_firmware(self, module_id: str, port: str = None) -> tuple[bool, str]:
+    def _run_arduino_cli(self, args: List[str], timeout: int = 60) -> Tuple[bool, str, str]:
+        """
+        Zentrale Ausführung von arduino-cli mit einheitlichem Error-Handling.
+        
+        Args:
+            args: Arduino-CLI Argumente (ohne 'arduino-cli' prefix)
+            timeout: Maximale Ausführungszeit in Sekunden
+            
+        Returns:
+            (success, stdout, stderr)
+        """
+        cmd = [self.arduino_cli] + args
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            if result.returncode != 0:
+                return False, result.stdout or "", result.stderr or ""
+            return True, result.stdout or "", result.stderr or ""
+        except subprocess.TimeoutExpired:
+            return False, "", "arduino-cli timeout"
+        except Exception as e:
+            return False, "", f"arduino-cli exception: {e}"
+    
+    def detect_board_name(self) -> str:
+        """
+        Zentrale Board-Erkennung über arduino-cli board list.
+        Wird sowohl für Bootstrap (LaravelClient) als auch für Firmware-Flash genutzt.
+        """
+        try:
+            if os.path.exists(self.arduino_cli):
+                success, out, err = self._run_arduino_cli(["board", "list"], timeout=10)
+                if success:
+                    out = (out + "\n" + err).lower()
+                    if "arduino uno" in out:
+                        return "arduino_uno"
+                    if "arduino mega" in out:
+                        return "arduino_mega"
+                    if "arduino nano" in out:
+                        return "arduino_nano"
+                    if "esp32" in out:
+                        return "esp32"
+                    if "esp8266" in out:
+                        return "esp8266"
+        except Exception:
+            pass
+        return "arduino_uno"
+    
+    def flash_firmware(self, module_id: str, port: str = None) -> Tuple[bool, str]:
         """
         Firmware auf Arduino flashen.
         Nur erlaubte Module werden akzeptiert (Whitelist).
@@ -558,45 +597,24 @@ class FirmwareManager:
             logger.info(f"[{timestamp}] Starte Firmware-Flash: {module_id} -> {target_port}")
             
             # Kompilieren
-            compile_cmd = [
-                self.arduino_cli,
-                "compile",
-                "--fqbn", "arduino:avr:uno",  # Standard: Arduino Uno
-                firmware_path
-            ]
-            
-            result = subprocess.run(
-                compile_cmd,
-                capture_output=True,
-                text=True,
+            success, out, err = self._run_arduino_cli(
+                ["compile", "--fqbn", "arduino:avr:uno", firmware_path],
                 timeout=60
             )
-            
-            if result.returncode != 0:
-                msg = f"Kompilierung fehlgeschlagen: {result.stderr}"
+            if not success:
+                msg = f"Kompilierung fehlgeschlagen: {err}"
                 logger.error(msg)
                 return False, msg
             
             logger.info("Kompilierung erfolgreich")
             
             # Upload
-            upload_cmd = [
-                self.arduino_cli,
-                "upload",
-                "--fqbn", "arduino:avr:uno",
-                "--port", target_port,
-                firmware_path
-            ]
-            
-            result = subprocess.run(
-                upload_cmd,
-                capture_output=True,
-                text=True,
+            success, out, err = self._run_arduino_cli(
+                ["upload", "--fqbn", "arduino:avr:uno", "--port", target_port, firmware_path],
                 timeout=60
             )
-            
-            if result.returncode != 0:
-                msg = f"Upload fehlgeschlagen: {result.stderr}"
+            if not success:
+                msg = f"Upload fehlgeschlagen: {err}"
                 logger.error(msg)
                 return False, msg
             
@@ -654,22 +672,7 @@ class FirmwareManager:
         except Exception as e:
             logger.error(f"Fehler beim Loggen des Flash-Events: {e}")
 
-    def _detect_board_name(self) -> str:
-        try:
-            # Versuch über arduino-cli board list
-            if os.path.exists(self.arduino_cli):
-                res = subprocess.run([self.arduino_cli, "board", "list"], capture_output=True, text=True, timeout=10)
-                out = (res.stdout or "") + "\n" + (res.stderr or "")
-                out = out.lower()
-                if "arduino uno" in out:
-                    return "arduino_uno"
-                if "esp32" in out:
-                    return "esp32"
-        except Exception:
-            pass
-        return "arduino_uno"
-    
-    def compile_sketch(self, sketch_path: str, board: str = "arduino:avr:uno") -> tuple[bool, str]:
+    def compile_sketch(self, sketch_path: str, board: str = "arduino:avr:uno") -> Tuple[bool, str]:
         """
         Kompiliert ein Arduino-Sketch ohne Upload.
         
@@ -680,42 +683,22 @@ class FirmwareManager:
         Returns:
             (success, message)
         """
-        try:
-            logger.info(f"Kompiliere Sketch: {sketch_path} für Board: {board}")
-            
-            compile_cmd = [
-                self.arduino_cli,
-                "compile",
-                "--fqbn", board,
-                sketch_path
-            ]
-            
-            result = subprocess.run(
-                compile_cmd,
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
-            
-            if result.returncode != 0:
-                msg = f"Kompilierung fehlgeschlagen:\n{result.stderr}"
-                logger.error(msg)
-                return False, msg
-            
-            msg = "Sketch erfolgreich kompiliert"
-            logger.info(msg)
-            return True, f"{msg}\n{result.stdout}"
-            
-        except subprocess.TimeoutExpired:
-            msg = "Kompilierung timeout (>120s)"
+        logger.info(f"Kompiliere Sketch: {sketch_path} für Board: {board}")
+        
+        success, out, err = self._run_arduino_cli(
+            ["compile", "--fqbn", board, sketch_path],
+            timeout=120
+        )
+        if not success:
+            msg = f"Kompilierung fehlgeschlagen:\n{err}"
             logger.error(msg)
             return False, msg
-        except Exception as e:
-            msg = f"Fehler beim Kompilieren: {e}"
-            logger.error(msg)
-            return False, msg
+        
+        msg = "Sketch erfolgreich kompiliert"
+        logger.info(msg)
+        return True, f"{msg}\n{out}"
     
-    def upload_hex(self, hex_file: str, board: str, port: str) -> tuple[bool, str]:
+    def upload_hex(self, hex_file: str, board: str, port: str) -> Tuple[bool, str]:
         """
         Uploaded kompilierte .hex Datei zum Arduino.
         
@@ -727,43 +710,22 @@ class FirmwareManager:
         Returns:
             (success, message)
         """
-        try:
-            logger.info(f"Uploade HEX: {hex_file} -> {port} (Board: {board})")
-            
-            upload_cmd = [
-                self.arduino_cli,
-                "upload",
-                "--fqbn", board,
-                "--port", port,
-                "--input-file", hex_file
-            ]
-            
-            result = subprocess.run(
-                upload_cmd,
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            
-            if result.returncode != 0:
-                msg = f"Upload fehlgeschlagen:\n{result.stderr}"
-                logger.error(msg)
-                return False, msg
-            
-            msg = f"Firmware erfolgreich auf {port} uploaded"
-            logger.info(msg)
-            return True, f"{msg}\n{result.stdout}"
-            
-        except subprocess.TimeoutExpired:
-            msg = "Upload timeout (>60s)"
+        logger.info(f"Uploade HEX: {hex_file} -> {port} (Board: {board})")
+        
+        success, out, err = self._run_arduino_cli(
+            ["upload", "--fqbn", board, "--port", port, "--input-file", hex_file],
+            timeout=60
+        )
+        if not success:
+            msg = f"Upload fehlgeschlagen:\n{err}"
             logger.error(msg)
             return False, msg
-        except Exception as e:
-            msg = f"Fehler beim Upload: {e}"
-            logger.error(msg)
-            return False, msg
+        
+        msg = f"Firmware erfolgreich auf {port} uploaded"
+        logger.info(msg)
+        return True, f"{msg}\n{out}"
     
-    def compile_and_upload(self, sketch_path: str, board: str, port: str) -> tuple[bool, str]:
+    def compile_and_upload(self, sketch_path: str, board: str, port: str) -> Tuple[bool, str]:
         """
         Kompiliert UND uploaded Sketch in einem Schritt.
         
@@ -775,59 +737,78 @@ class FirmwareManager:
         Returns:
             (success, message)
         """
-        try:
-            logger.info(f"Compile + Upload: {sketch_path} -> {port} (Board: {board})")
-            
-            # Compile
-            compile_success, compile_msg = self.compile_sketch(sketch_path, board)
-            if not compile_success:
-                return False, f"Kompilierung fehlgeschlagen: {compile_msg}"
-            
-            # Upload direkt mit sketch_path (arduino-cli handled das)
-            upload_cmd = [
-                self.arduino_cli,
-                "upload",
-                "--fqbn", board,
-                "--port", port,
-                sketch_path
-            ]
-            
-            result = subprocess.run(
-                upload_cmd,
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            
-            if result.returncode != 0:
-                msg = f"Upload fehlgeschlagen:\n{result.stderr}"
-                logger.error(msg)
-                return False, msg
-            
-            msg = f"Sketch erfolgreich kompiliert und auf {port} uploaded"
-            logger.info(msg)
-            
-            # Log Event
-            timestamp = datetime.now(timezone.utc).isoformat()
-            self._log_flash_event(timestamp, sketch_path, port, True)
-            
-            return True, f"{msg}\n{result.stdout}"
-            
-        except subprocess.TimeoutExpired:
-            msg = "Compile+Upload timeout"
+        logger.info(f"Compile + Upload: {sketch_path} -> {port} (Board: {board})")
+        
+        # Compile
+        compile_success, compile_msg = self.compile_sketch(sketch_path, board)
+        if not compile_success:
+            return False, f"Kompilierung fehlgeschlagen: {compile_msg}"
+        
+        # Upload
+        success, out, err = self._run_arduino_cli(
+            ["upload", "--fqbn", board, "--port", port, sketch_path],
+            timeout=60
+        )
+        if not success:
+            msg = f"Upload fehlgeschlagen:\n{err}"
             logger.error(msg)
             return False, msg
-        except Exception as e:
-            msg = f"Fehler bei Compile+Upload: {e}"
-            logger.error(msg)
-            return False, msg
+        
+        msg = f"Sketch erfolgreich kompiliert und auf {port} uploaded"
+        logger.info(msg)
+        
+        # Log Event
+        timestamp = datetime.now(timezone.utc).isoformat()
+        self._log_flash_event(timestamp, sketch_path, port, True)
+        
+        return True, f"{msg}\n{out}"
 
 
 class HardwareAgent:
     """
     Hauptklasse des Hardware-Agents.
-    Verwaltet Serial-Kommunikation, Telemetrie und Befehls-Polling.
+    Verwaltet Serial-Kommunikation und Befehls-Polling.
     """
+    
+    @contextmanager
+    def _serial_temporarily_closed(self):
+        """
+        Schließt die serielle Verbindung für kritische Operationen (Flash/Upload)
+        und stellt sie danach wieder her.
+        """
+        old_serial = self.serial
+        try:
+            old_serial.close()
+        except Exception:
+            pass
+        time.sleep(1)
+        try:
+            yield
+        finally:
+            time.sleep(2)
+            self.serial = SerialProtocol(self.config.serial_port, self.config.baud_rate)
+    
+    def _create_temp_sketch(self, code: str, sketch_name: str) -> Tuple[Path, Path]:
+        """
+        Erstellt ein temporäres Sketch-Verzeichnis und Datei.
+        
+        Returns:
+            (sketch_dir, sketch_file)
+        """
+        sketch_dir = Path(tempfile.mkdtemp(prefix="arduino_sketch_"))
+        sketch_file = sketch_dir / f"{sketch_name}.ino"
+        sketch_file.write_text(code)
+        logger.info(f"Sketch erstellt: {sketch_file}")
+        return sketch_dir, sketch_file
+    
+    def _cleanup_temp_sketch(self, sketch_dir: Path):
+        """
+        Löscht das temporäre Sketch-Verzeichnis sauber auf.
+        """
+        try:
+            shutil.rmtree(sketch_dir, ignore_errors=True)
+        except Exception as e:
+            logger.error(f"Fehler beim Löschen des Temp-Sketches: {e}")
     
     def __init__(self, config_override=None, device_info=None):
         self.config = config_override if config_override else AgentConfig()
@@ -835,6 +816,8 @@ class HardwareAgent:
         self.serial = SerialProtocol(self.config.serial_port, self.config.baud_rate)
         self.laravel = LaravelClient(self.config)
         self.firmware_mgr = FirmwareManager(self.config)
+        # Set FirmwareManager reference in LaravelClient for centralized board detection
+        self.laravel._firmware_mgr = self.firmware_mgr
         self._stop_event = threading.Event()
         self._log_buffer = deque(maxlen=500)
         
@@ -960,7 +943,7 @@ class HardwareAgent:
             if not data:
                 logger.error("Bootstrap fehlgeschlagen.")
                 sys.exit(1)
-            bootstrap_id = data.get("device_id") or data.get("bootstrap_id") or self._make_bootstrap_id()
+            bootstrap_id = data.get("device_id") or data.get("bootstrap_id") or self.laravel._make_bootstrap_id()
             code = data.get("bootstrap_code") or data.get("code")
             if not code:
                 logger.error("Kein Pairing-Code erhalten.")
@@ -1069,16 +1052,8 @@ class HardwareAgent:
                 if not module_id:
                     return False, "Kein module_id angegeben"
                 
-                # Serial-Verbindung schließen vor Flash
-                self.serial.close()
-                time.sleep(1)
-                
-                # Firmware flashen
-                success, message = self.firmware_mgr.flash_firmware(module_id)
-                
-                # Serial-Verbindung wiederherstellen
-                time.sleep(2)
-                self.serial = SerialProtocol(self.config.serial_port, self.config.baud_rate)
+                with self._serial_temporarily_closed():
+                    success, message = self.firmware_mgr.flash_firmware(module_id)
                 
                 return success, message
             
@@ -1098,28 +1073,15 @@ class HardwareAgent:
                 if not code:
                     return False, "Kein Arduino-Code angegeben"
                 
-                # Temporäres Sketch-Verzeichnis erstellen
-                import tempfile
-                sketch_dir = Path(tempfile.mkdtemp(prefix="arduino_sketch_"))
-                sketch_file = sketch_dir / f"{sketch_name}.ino"
-                
+                sketch_dir, sketch_file = self._create_temp_sketch(code, sketch_name)
                 try:
-                    # Code in .ino Datei schreiben
-                    sketch_file.write_text(code)
-                    logger.info(f"Sketch erstellt: {sketch_file}")
-                    
-                    # Arduino-CLI Compile
                     success, message = self.firmware_mgr.compile_sketch(
                         str(sketch_file),
                         board
                     )
-                    
                     return success, message
-                    
                 finally:
-                    # Cleanup
-                    import shutil
-                    shutil.rmtree(sketch_dir, ignore_errors=True)
+                    self._cleanup_temp_sketch(sketch_dir)
             
             elif cmd_type == "arduino_upload":
                 """
@@ -1136,24 +1098,14 @@ class HardwareAgent:
                 if not hex_file or not Path(hex_file).exists():
                     return False, f"HEX-Datei nicht gefunden: {hex_file}"
                 
-                # Serial-Verbindung schließen
-                self.serial.close()
-                time.sleep(1)
-                
-                try:
-                    # Arduino-CLI Upload
+                with self._serial_temporarily_closed():
                     success, message = self.firmware_mgr.upload_hex(
                         hex_file,
                         board,
                         port
                     )
-                    
-                    return success, message
-                    
-                finally:
-                    # Serial-Verbindung wiederherstellen
-                    time.sleep(2)
-                    self.serial = SerialProtocol(self.config.serial_port, self.config.baud_rate)
+                
+                return success, message
             
             elif cmd_type == "arduino_compile_upload":
                 """
@@ -1172,35 +1124,17 @@ class HardwareAgent:
                 if not code:
                     return False, "Kein Arduino-Code angegeben"
                 
-                # Temporäres Sketch-Verzeichnis
-                import tempfile
-                sketch_dir = Path(tempfile.mkdtemp(prefix="arduino_sketch_"))
-                sketch_file = sketch_dir / f"{sketch_name}.ino"
-                
+                sketch_dir, sketch_file = self._create_temp_sketch(code, sketch_name)
                 try:
-                    # Code schreiben
-                    sketch_file.write_text(code)
-                    logger.info(f"Sketch erstellt: {sketch_file}")
-                    
-                    # Serial schließen
-                    self.serial.close()
-                    time.sleep(1)
-                    
-                    # Compile + Upload
-                    success, message = self.firmware_mgr.compile_and_upload(
-                        str(sketch_file),
-                        board,
-                        port
-                    )
-                    
+                    with self._serial_temporarily_closed():
+                        success, message = self.firmware_mgr.compile_and_upload(
+                            str(sketch_file),
+                            board,
+                            port
+                        )
                     return success, message
-                    
                 finally:
-                    # Cleanup & Serial wiederherstellen
-                    import shutil
-                    shutil.rmtree(sketch_dir, ignore_errors=True)
-                    time.sleep(2)
-                    self.serial = SerialProtocol(self.config.serial_port, self.config.baud_rate)
+                    self._cleanup_temp_sketch(sketch_dir)
             
             else:
                 return False, f"Unbekannter Befehl: {cmd_type}"
