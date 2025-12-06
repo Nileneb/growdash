@@ -12,14 +12,18 @@ import argparse
 import json
 import logging
 import os
+import threading
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 from urllib.parse import quote_plus
 
+import cv2
 import requests
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import Field
 from pydantic_settings import BaseSettings
 from board_registry import BoardRegistry
@@ -88,6 +92,85 @@ class CameraEndpointBuilder:
         return f"http://{self.config.webcam_host}:{self.config.webcam_port}{self.config.webcam_endpoint_prefix}?device={encoded}"
 
 
+class VideoStreamManager:
+    """Verwaltet Video-Streams mit OpenCV für MJPEG-Streaming über HTTP."""
+    
+    def __init__(self):
+        self.active_streams: Dict[str, cv2.VideoCapture] = {}
+        self.stream_locks: Dict[str, threading.Lock] = {}
+    
+    def get_or_create_stream(self, device_path: str) -> Optional[cv2.VideoCapture]:
+        """Öffnet einen Video-Stream oder gibt den existierenden zurück."""
+        if device_path not in self.active_streams:
+            try:
+                cap = cv2.VideoCapture(device_path)
+                if not cap.isOpened():
+                    logger.error(f"Konnte Kamera nicht öffnen: {device_path}")
+                    return None
+                
+                # Optimale Settings für Web-Streaming
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                cap.set(cv2.CAP_PROP_FPS, 15)
+                
+                self.active_streams[device_path] = cap
+                self.stream_locks[device_path] = threading.Lock()
+                logger.info(f"Video-Stream geöffnet: {device_path}")
+            except Exception as exc:
+                logger.error(f"Fehler beim Öffnen der Kamera {device_path}: {exc}")
+                return None
+        
+        return self.active_streams.get(device_path)
+    
+    def generate_mjpeg_stream(self, device_path: str):
+        """Generator für MJPEG-Frames (Multipart HTTP Response)."""
+        cap = self.get_or_create_stream(device_path)
+        if not cap:
+            yield b''
+            return
+        
+        lock = self.stream_locks.get(device_path)
+        
+        while True:
+            try:
+                with lock:
+                    success, frame = cap.read()
+                    if not success:
+                        logger.warning(f"Frame-Read fehlgeschlagen: {device_path}")
+                        time.sleep(0.1)
+                        continue
+                    
+                    # Frame zu JPEG komprimieren
+                    ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    if not ret:
+                        continue
+                    
+                    frame_bytes = buffer.tobytes()
+                
+                # MJPEG-Multipart-Format
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                
+                time.sleep(0.033)  # ~30fps max
+                
+            except Exception as exc:
+                logger.error(f"Streaming-Fehler für {device_path}: {exc}")
+                break
+    
+    def release_stream(self, device_path: str):
+        """Gibt einen Video-Stream frei."""
+        if device_path in self.active_streams:
+            self.active_streams[device_path].release()
+            del self.active_streams[device_path]
+            del self.stream_locks[device_path]
+            logger.info(f"Video-Stream geschlossen: {device_path}")
+    
+    def release_all(self):
+        """Gibt alle Video-Streams frei."""
+        for device_path in list(self.active_streams.keys()):
+            self.release_stream(device_path)
+
+
 class CameraWebhookPublisher:
     def __init__(self, config: CameraConfig):
         self.config = config
@@ -128,6 +211,7 @@ class CameraWebhookPublisher:
 def create_app(config: CameraConfig) -> FastAPI:
     detector = CameraDetector()
     builder = CameraEndpointBuilder(config)
+    stream_manager = VideoStreamManager()
     
     # Board Registry initialisieren
     board_registry = BoardRegistry(
@@ -142,6 +226,11 @@ def create_app(config: CameraConfig) -> FastAPI:
         allow_methods=["GET", "POST"],
         allow_headers=["*"]
     )
+    
+    @app.on_event("shutdown")
+    def shutdown_event():
+        """Gibt alle Video-Streams beim Herunterfahren frei."""
+        stream_manager.release_all()
 
     @app.get("/webcams")
     def get_webcams():
@@ -165,6 +254,19 @@ def create_app(config: CameraConfig) -> FastAPI:
         if not match:
             raise HTTPException(status_code=404, detail="Kamera nicht gefunden")
         return {"endpoint": builder.build(match)}
+    
+    @app.get("/stream/webcam")
+    def stream_webcam(device: str):
+        """MJPEG-Video-Stream für eine spezifische Webcam."""
+        cameras = detector.scan()
+        match = next((cam for cam in cameras if cam["device"] == device), None)
+        if not match:
+            raise HTTPException(status_code=404, detail="Kamera nicht gefunden")
+        
+        return StreamingResponse(
+            stream_manager.generate_mjpeg_stream(device),
+            media_type="multipart/x-mixed-replace; boundary=frame"
+        )
     
     @app.get("/devices")
     def get_all_devices():
