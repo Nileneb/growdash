@@ -6,7 +6,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS30": {
     "board_fqbn": null,
@@ -15,7 +15,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS29": {
     "board_fqbn": null,
@@ -24,7 +24,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS28": {
     "board_fqbn": null,
@@ -33,7 +33,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS27": {
     "board_fqbn": null,
@@ -42,7 +42,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS26": {
     "board_fqbn": null,
@@ -51,7 +51,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS25": {
     "board_fqbn": null,
@@ -60,7 +60,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS24": {
     "board_fqbn": null,
@@ -69,7 +69,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS23": {
     "board_fqbn": null,
@@ -78,7 +78,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS22": {
     "board_fqbn": null,
@@ -87,7 +87,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS21": {
     "board_fqbn": null,
@@ -96,7 +96,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS20": {
     "board_fqbn": null,
@@ -105,7 +105,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS19": {
     "board_fqbn": null,
@@ -114,7 +114,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS18": {
     "board_fqbn": null,
@@ -123,7 +123,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS17": {
     "board_fqbn": null,
@@ -132,7 +132,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS16": {
     "board_fqbn": null,
@@ -141,7 +141,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS15": {
     "board_fqbn": null,
@@ -150,7 +150,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS14": {
     "board_fqbn": null,
@@ -159,7 +159,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS13": {
     "board_fqbn": null,
@@ -168,7 +168,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS12": {
     "board_fqbn": null,
@@ -177,7 +177,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS11": {
     "board_fqbn": null,
@@ -186,7 +186,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS10": {
     "board_fqbn": null,
@@ -195,7 +195,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS9": {
     "board_fqbn": null,
@@ -204,7 +204,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS8": {
     "board_fqbn": null,
@@ -213,7 +213,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS7": {
     "board_fqbn": null,
@@ -222,7 +222,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS6": {
     "board_fqbn": null,
@@ -231,7 +231,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS5": {
     "board_fqbn": null,
@@ -240,7 +240,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS4": {
     "board_fqbn": null,
@@ -249,7 +249,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS3": {
     "board_fqbn": null,
@@ -258,7 +258,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS2": {
     "board_fqbn": null,
@@ -267,7 +267,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS1": {
     "board_fqbn": null,
@@ -276,7 +276,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyS0": {
     "board_fqbn": null,
@@ -285,7 +285,7 @@
     "product_id": null,
     "description": "n/a",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/ttyACM0": {
     "board_fqbn": "arduino:avr:uno",
@@ -294,7 +294,7 @@
     "product_id": "0043",
     "description": "ttyACM0",
     "type": "serial",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/video0": {
     "board_fqbn": null,
@@ -303,7 +303,7 @@
     "product_id": null,
     "description": "IW 3000: IW 3000",
     "type": "camera",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   },
   "/dev/video1": {
     "board_fqbn": null,
@@ -312,6 +312,6 @@
     "product_id": null,
     "description": "IW 3000: IW 3000",
     "type": "camera",
-    "last_seen": "2025-12-06T17:16:49Z"
+    "last_seen": "2025-12-06T18:35:48Z"
   }
 }

@@ -54,3 +54,7 @@ firmware/flash_log.json
 
 # Logs
 *.log
+
+
+#board-config
+boards.json
