@@ -141,8 +141,7 @@ class SerialProtocol:
                 self.command_response_queue.put(line)
                 return
             
-            # Telemetrie-Parsing (Legacy - deaktiviert)
-            # K\u00f6nnte sp\u00e4ter reaktiviert werden, wenn Laravel-Endpoint existiert
+
             logger.debug(f"Serial RX: {line}")
             
         except Exception as e:
@@ -281,10 +280,6 @@ class LaravelClient:
                 "bootstrap_id": self._make_bootstrap_id(),
                 "name": self._get_device_name(),
                 "board_type": self._detect_board_name_for_bootstrap(),
-                "capabilities": {
-                    "sensors": ["water_level", "tds", "temperature"],
-                    "actuators": ["spray_pump", "fill_valve"],
-                },
             }
             r = requests.post(url, json=payload, timeout=20)
             r.raise_for_status()
@@ -327,11 +322,6 @@ class LaravelClient:
                 "bootstrap_id": self._make_bootstrap_id(),
                 "name": self._get_device_name(),
                 "board_type": self._detect_board_name_for_bootstrap(),
-                "capabilities": {
-                    "board_name": self._detect_board_name_for_bootstrap(),
-                    "sensors": ["water_level", "ph", "ec"],
-                    "actuators": ["spray_pump", "fill_valve"],
-                },
                 "revoke_user_token": True,
             }
             r = requests.post(url, json=payload, headers=headers, timeout=25)
