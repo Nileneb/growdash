@@ -412,7 +412,7 @@ class LaravelClient:
         except Exception:
             pass
     
-    def send_heartbeat(self, last_state: Optional[Dict] = None, device_info=None) -> bool:
+    def send_heartbeat(self, last_state: Optional[Dict] = None, device_info=None, logs: Optional[List[Dict[str, Any]]] = None) -> bool:
         """
         Heartbeat an Laravel senden (alle 30-60 Sekunden).
         Hält Device-Status auf "online" und aktualisiert last_seen_at.
@@ -420,12 +420,15 @@ class LaravelClient:
         Args:
             last_state: Optional dict mit Systemstatus (uptime, memory, etc.)
             device_info: Optional USBDeviceInfo mit Hardware-Details
+            logs: Optional Log-Batch, wird zusammen mit Heartbeat übertragen
             
         Returns:
             True wenn erfolgreich, False bei Fehler
         """
         try:
             payload = {"last_state": last_state} if last_state else {}
+            if logs:
+                payload["logs"] = logs
             
             # Hardware-Info hinzufügen wenn verfügbar
             if device_info:
@@ -813,6 +816,13 @@ class HardwareAgent:
             shutil.rmtree(sketch_dir, ignore_errors=True)
         except Exception as e:
             logger.error(f"Fehler beim Löschen des Temp-Sketches: {e}")
+
+    def _drain_log_buffer(self) -> List[Dict[str, Any]]:
+        """Entleert den Log-Puffer FIFO für den Versand."""
+        items: List[Dict[str, Any]] = []
+        while self._log_buffer:
+            items.append(self._log_buffer.popleft())
+        return items
     
     def __init__(self, config_override=None, device_info=None):
         self.config = config_override if config_override else AgentConfig()
@@ -1192,7 +1202,12 @@ class HardwareAgent:
                     "python_version": platform.python_version(),
                     "platform": platform.system().lower(),
                 }
-                success = self.laravel.send_heartbeat(last_state, self.device_info)
+                logs_batch = self._drain_log_buffer()
+                success = self.laravel.send_heartbeat(
+                    last_state,
+                    self.device_info,
+                    logs_batch if logs_batch else None,
+                )
                 
                 if success:
                     logger.debug(f"✅ Heartbeat gesendet (uptime={uptime}s)")
@@ -1223,11 +1238,9 @@ class HardwareAgent:
         # Loops in separaten Threads starten
         command_thread = threading.Thread(target=self.command_loop, daemon=True)
         heartbeat_thread = threading.Thread(target=self.heartbeat_loop, daemon=True)
-        logs_thread = threading.Thread(target=self.logs_loop, daemon=True)
         
         command_thread.start()
         heartbeat_thread.start()
-        logs_thread.start()
         
         logger.info("Agent läuft... (Strg+C zum Beenden)")
         logger.info(f"  Befehle: alle {self.config.command_poll_interval}s")
