@@ -94,9 +94,9 @@ class CameraWebhookPublisher:
         self.session = requests.Session()
         self.session.headers.update({
             "Content-Type": "application/json",
+            "X-Device-ID": config.device_public_id or "",
+            "X-Device-Token": config.device_token or "",
         })
-        if self.config.device_token:
-            self.session.headers["Authorization"] = f"Bearer {self.config.device_token}"
 
     def publish(self, cameras: List[Dict[str, str]], endpoint_builder: CameraEndpointBuilder) -> bool:
         if not self.config.device_public_id or not self.config.device_token:
@@ -104,7 +104,6 @@ class CameraWebhookPublisher:
             return False
 
         payload = {
-            "device_id": self.config.device_public_id,
             "webcams": [
                 {
                     "device": cam["device"],
