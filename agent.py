@@ -263,8 +263,6 @@ class LaravelClient:
         except Exception:
             pass
         return 'arduino_uno'
-        # Cache for simple board detection fallback
-        self._cached_board_name: Optional[str] = None
 
     def set_device_headers(self, device_id: str, device_token: str):
         """Headers für Device-Auth setzen/aktualisieren"""
@@ -274,31 +272,12 @@ class LaravelClient:
             "Content-Type": "application/json"
         })
 
-    def _make_bootstrap_id(self) -> str:
-        """Bootstrap-ID generieren (stabil pro Host + Port)"""
-        import socket
-        host = socket.gethostname()
-        port = (self.config.serial_port or "serial").replace("/", "_")
-        return f"{host}-{port}"[:64]
-
-    def _detect_board_name_for_bootstrap(self) -> str:
-        """Einfaches Board-Mapping für Bootstrap"""
-        if self._cached_board_name:
-            return self._cached_board_name
-        # Very light heuristic; could be expanded
-        sp = self.config.serial_port.lower()
-        if "ttyusb" in sp or "ttyacm" in sp:
-            self._cached_board_name = "arduino_uno"
-        else:
-            self._cached_board_name = "arduino_uno"
-        return self._cached_board_name
-
     # ---------- Onboarding / Auth Flows (außerhalb der Agent-API) ----------
     def start_pairing_bootstrap(self) -> Optional[Dict[str, Any]]:
         """/api/agents/bootstrap mit Details aufrufen und Bootstrap-Code erhalten"""
         url = f"{self.config.laravel_base_url}/api/agents/bootstrap"
-                    import socket
-                    device_name = f"GrowDash {socket.gethostname()}"
+        import socket
+        device_name = f"GrowDash {socket.gethostname()}"
             
         try:
             payload = {
@@ -345,8 +324,8 @@ class LaravelClient:
     def register_device_from_agent(self, bearer_token: str) -> Optional[Dict[str, Any]]:
         """/api/growdash/devices/register → public_id + agent_token (PLAINTEXT)"""
         url = f"{self.config.laravel_base_url}/api/growdash/devices/register"
-                    import socket
-                    device_name = f"GrowDash {socket.gethostname()}"
+        import socket
+        device_name = f"GrowDash {socket.gethostname()}"
             
         try:
             headers = {"Authorization": f"Bearer {bearer_token}", "Content-Type": "application/json"}
