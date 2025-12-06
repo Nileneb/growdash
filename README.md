@@ -88,7 +88,6 @@ cd growdash
 - ✅ **Device-Token Authentifizierung** - Sichere Kommunikation mit Laravel-Backend
 - ✅ **Automatisches Onboarding** - Pairing-Code oder Direct-Login
 - ✅ **Serial-Kommunikation** - Direkte Arduino-Steuerung mit Command-Responses
-- ✅ **Telemetrie** - Automatisches Senden von Sensor-Daten (Wasserstand, TDS, Temperatur)
 - ✅ **Command-Polling** - Empfängt und führt Commands vom Backend aus
 - ✅ **Heartbeat** - Hält Device-Status auf "online"
 - ✅ **Board Detection** - Automatische Erkennung von Arduino Uno, Mega, ESP32, etc.
@@ -240,9 +239,7 @@ Agent kommuniziert mit Laravel-Backend:
 | ----------------------- | ------- | ------------------------- |
 | `/commands/pending`     | GET     | Holt ausstehende Commands |
 | `/commands/{id}/result` | POST    | Meldet Command-Ergebnis   |
-| `/telemetry`            | POST    | Sendet Sensor-Daten       |
 | `/heartbeat`            | POST    | Meldet "online" Status    |
-| `/capabilities`         | POST    | Sendet Board/Sensor-Info  |
 | `/logs`                 | POST    | Sendet Log-Batch          |
 
 📖 **Details:** [docs/LARAVEL_ENDPOINTS.md](docs/LARAVEL_ENDPOINTS.md)
