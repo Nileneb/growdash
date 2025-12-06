@@ -1,0 +1,271 @@
+"""
+GrowDash Camera Module
+======================
+Hilfsscript, das USB-Webcams erkennt, den lokalen Stream-Endpunkt ausgibt
+und optional einem Laravel-Webhook meldet. Das Modul läuft separat von
+`agent.py` und liefert nur Informationen, damit der Agent die Kamera
+verlinken kann.
+Integriert Board-Registry für zentrale Device-Verwaltung (Serial + Cameras).
+"""
+
+import argparse
+import json
+import logging
+import os
+from pathlib import Path
+from typing import Dict, List, Optional
+from urllib.parse import quote_plus
+
+import requests
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import Field
+from pydantic_settings import BaseSettings
+from board_registry import BoardRegistry
+
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+
+class CameraConfig(BaseSettings):
+    laravel_base_url: str = Field(default="https://grow.linn.games")
+    laravel_api_path: str = Field(default="/api/growdash/agent")
+    device_public_id: str = Field(default="")
+    device_token: str = Field(default="")
+
+    webcam_host: str = Field(default="127.0.0.1")
+    webcam_port: int = Field(default=8090)
+    webcam_endpoint_prefix: str = Field(default="/stream/webcam")
+
+    webcam_webhook_path: str = Field(default="/api/growdash/agent/webcams")
+    
+    board_registry_path: str = Field(default="./boards.json")
+    arduino_cli_path: str = Field(default="/usr/local/bin/arduino-cli")
+
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        extra = "ignore"
+
+
+class CameraDetector:
+    """Verwendet den Port-Scan um verfügbare Video4Linux-Geräte zu erkennen."""
+
+    @staticmethod
+    def scan() -> List[Dict[str, str]]:
+        cameras: List[Dict[str, str]] = []
+        base = Path("/dev")
+        if not base.exists():
+            return cameras
+
+        for entry in sorted(base.iterdir()):
+            if not entry.name.startswith("video"):
+                continue
+            if not entry.is_char_device():
+                continue
+
+            friendly_name = entry.name
+            name_file = Path(f"/sys/class/video4linux/{entry.name}/name")
+            if name_file.exists():
+                friendly_name = name_file.read_text(encoding="utf-8", errors="ignore").strip()
+
+            cameras.append({
+                "device": str(entry),
+                "name": friendly_name,
+                "sys_path": f"/sys/class/video4linux/{entry.name}",
+            })
+        return cameras
+
+
+class CameraEndpointBuilder:
+    def __init__(self, config: CameraConfig):
+        self.config = config
+
+    def build(self, camera: Dict[str, str]) -> str:
+        encoded = quote_plus(camera["device"])
+        return f"http://{self.config.webcam_host}:{self.config.webcam_port}{self.config.webcam_endpoint_prefix}?device={encoded}"
+
+
+class CameraWebhookPublisher:
+    def __init__(self, config: CameraConfig):
+        self.config = config
+        self.session = requests.Session()
+        self.session.headers.update({
+            "Content-Type": "application/json",
+        })
+        if self.config.device_token:
+            self.session.headers["Authorization"] = f"Bearer {self.config.device_token}"
+
+    def publish(self, cameras: List[Dict[str, str]], endpoint_builder: CameraEndpointBuilder) -> bool:
+        if not self.config.device_public_id or not self.config.device_token:
+            logger.warning("Keine Device-Credentials, Webhook wird nicht aufgerufen.")
+            return False
+
+        payload = {
+            "device_id": self.config.device_public_id,
+            "webcams": [
+                {
+                    "device": cam["device"],
+                    "name": cam["name"],
+                    "endpoint": endpoint_builder.build(cam),
+                }
+                for cam in cameras
+            ],
+        }
+
+        url = f"{self.config.laravel_base_url}{self.config.webcam_webhook_path}"
+        try:
+            response = self.session.post(url, json=payload, timeout=10)
+            response.raise_for_status()
+            logger.info("Webcam-Endpunkte an das Backend gemeldet.")
+            return True
+        except Exception as exc:
+            logger.error(f"Webhook konnte nicht aufgerufen werden: {exc}")
+            return False
+
+
+def create_app(config: CameraConfig) -> FastAPI:
+    detector = CameraDetector()
+    builder = CameraEndpointBuilder(config)
+    
+    # Board Registry initialisieren
+    board_registry = BoardRegistry(
+        registry_file=config.board_registry_path,
+        arduino_cli=config.arduino_cli_path
+    )
+
+    app = FastAPI(title="GrowDash Camera Module")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["GET", "POST"],
+        allow_headers=["*"]
+    )
+
+    @app.get("/webcams")
+    def get_webcams():
+        cameras = detector.scan()
+        return {
+            "count": len(cameras),
+            "webcams": [
+                {
+                    "device": cam["device"],
+                    "name": cam["name"],
+                    "endpoint": builder.build(cam),
+                }
+                for cam in cameras
+            ],
+        }
+
+    @app.get("/webcam-endpoint")
+    def get_webcam_endpoint(device: str):
+        cameras = detector.scan()
+        match = next((cam for cam in cameras if cam["device"] == device), None)
+        if not match:
+            raise HTTPException(status_code=404, detail="Kamera nicht gefunden")
+        return {"endpoint": builder.build(match)}
+    
+    @app.get("/devices")
+    def get_all_devices():
+        """
+        Gibt alle Devices aus der Board-Registry zurück (Serial + Cameras).
+        Integriert Kamera-Endpoints für Video-Devices.
+        """
+        all_devices = board_registry.get_all_boards()
+        
+        devices_response = {
+            "serial_ports": [],
+            "cameras": []
+        }
+        
+        for device_path, info in all_devices.items():
+            device_type = info.get("type", "unknown")
+            
+            if device_type == "serial":
+                devices_response["serial_ports"].append({
+                    "port": device_path,
+                    "board_fqbn": info.get("board_fqbn"),
+                    "board_name": info.get("board_name"),
+                    "vendor_id": info.get("vendor_id"),
+                    "product_id": info.get("product_id"),
+                    "description": info.get("description"),
+                    "last_seen": info.get("last_seen")
+                })
+            
+            elif device_type == "camera":
+                # Kamera-Endpoint generieren
+                cam_dict = {
+                    "device": device_path,
+                    "name": info.get("board_name", "Unknown Camera")
+                }
+                endpoint = builder.build(cam_dict)
+                
+                devices_response["cameras"].append({
+                    "device": device_path,
+                    "name": info.get("board_name"),
+                    "endpoint": endpoint,
+                    "description": info.get("description"),
+                    "last_seen": info.get("last_seen")
+                })
+        
+        return {
+            "success": True,
+            "total_devices": len(all_devices),
+            "serial_count": len(devices_response["serial_ports"]),
+            "camera_count": len(devices_response["cameras"]),
+            "devices": devices_response
+        }
+    
+    @app.post("/devices/refresh")
+    def refresh_devices():
+        """
+        Scannt alle Devices neu und aktualisiert die Registry.
+        """
+        count = board_registry.refresh()
+        return {
+            "success": True,
+            "message": f"Registry aktualisiert: {count} Devices erkannt",
+            "count": count
+        }
+
+    return app
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="GrowDash Camera Module")
+    parser.add_argument("--serve", action="store_true", help="Startet den FastAPI-Server für Endpunkte")
+    parser.add_argument("--publish", action="store_true", help="Sendet gefundene Webcams als Webhook")
+    parser.add_argument("--print", action="store_true", help="Gibt die gefundenen Webcams auf STDOUT aus")
+    args = parser.parse_args()
+
+    config = CameraConfig()
+    detector = CameraDetector()
+    builder = CameraEndpointBuilder(config)
+    publisher = CameraWebhookPublisher(config)
+
+    cameras = detector.scan()
+
+    if args.print or not args.serve and not args.publish:
+        print(json.dumps({
+            "webcams": [
+                {
+                    "device": cam["device"],
+                    "name": cam["name"],
+                    "endpoint": builder.build(cam),
+                }
+                for cam in cameras
+            ]
+        }, indent=2))
+
+    if args.publish:
+        publisher.publish(cameras, builder)
+
+    if args.serve:
+        app = create_app(config)
+        uvicorn.run(app, host=config.webcam_host, port=config.webcam_port)
+
+
+if __name__ == "__main__":
+    main()

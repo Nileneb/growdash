@@ -1,6 +1,6 @@
 # GrowDash Hardware Agent
 
-**Simple Hardware Bridge: Laravel ↔ Arduino**
+**Simple Hardware Bridge: Laravel ↔ Arduino + Cameras**
 
 ## Was macht der Agent?
 
@@ -8,6 +8,8 @@
 - 🛠️ **Arduino-CLI** Wrapper (compile/upload)
 - 📡 **HTTP-Client** zu Laravel (commands/telemetry/heartbeat)
 - 🔍 **Port-Scanner** für verfügbare Serial-Devices
+- 📷 **Kamera-Modul** für USB-Webcam-Integration
+- 🗂️ **Board-Registry** für persistente Device-Zuordnung
 
 ## Setup
 
@@ -26,12 +28,89 @@ DEVICE_TOKEN=your-token
 SERIAL_PORT=/dev/ttyACM0
 BAUD_RATE=9600
 ARDUINO_CLI_PATH=/usr/local/bin/arduino-cli
+
+# Board Registry (optional)
+BOARD_REGISTRY_PATH=./boards.json
+AUTO_REFRESH_REGISTRY=false     # true = synchroner Refresh beim Start
+REGISTRY_MAX_AGE=3600            # Max. Alter in Sekunden (1h default)
 ```
+
+**Registry-Verhalten:**
+
+- **Default (`AUTO_REFRESH_REGISTRY=false`)**: Registry wird sofort aus `boards.json` geladen (instant), asynchroner Scan im Hintergrund falls veraltet
+- **Synchron (`AUTO_REFRESH_REGISTRY=true`)**: Agent wartet auf Registry-Scan beim Start (langsamer, aber garantiert aktuell)
+- **Stale-Check**: Registry wird nur gescannt wenn älter als `REGISTRY_MAX_AGE` Sekunden
 
 3. **Run Agent:**
 
 ```bash
 python agent.py
+```
+
+## Board Registry
+
+Die Board-Registry verwaltet persistente Port→Board-Zuordnungen für alle angeschlossenen Devices (Serial + Cameras).
+
+**🚀 Performance-Optimierung:**
+- Registry wird **instant aus Cache geladen** (0.000s)
+- Scan nur bei Bedarf (Registry älter als `REGISTRY_MAX_AGE`)
+- **Kein Startup-Delay** durch asynchronen Background-Scan
+
+### CLI Usage
+
+```bash
+# Alle Devices scannen und Registry aktualisieren
+python board_registry.py --refresh
+
+# Registry-Einträge anzeigen
+python board_registry.py --list
+
+# Veraltete Einträge entfernen
+python board_registry.py --cleanup
+
+# Custom Registry-Datei
+python board_registry.py --registry-file ./custom-boards.json --refresh
+```
+
+### Automatischer Scan
+
+Der Agent lädt die Registry **instant aus `boards.json`** (kein Delay beim Start). Der Scan läuft nur wenn:
+
+1. **Registry veraltet** - Älter als `REGISTRY_MAX_AGE` (default: 1 Stunde)
+2. **Registry leer** - Keine `boards.json` vorhanden
+3. **Explizit gewünscht** - `AUTO_REFRESH_REGISTRY=true` in `.env`
+
+**Performance:**
+- Registry laden: **0.000s** (cached)
+- Voller Scan: ~60s (nur bei Bedarf, im Hintergrund)
+
+**Modi:**
+- **Async (default)**: Agent startet sofort, Scan läuft im Hintergrund
+- **Sync**: Agent wartet auf Scan-Ergebnis (langsamer, aber garantiert aktuell)
+
+### Registry-Format (`boards.json`)
+
+```json
+{
+  "/dev/ttyACM0": {
+    "board_fqbn": "arduino:avr:uno",
+    "board_name": "Arduino Uno",
+    "vendor_id": "2341",
+    "product_id": "0043",
+    "description": "Arduino Uno",
+    "type": "serial",
+    "last_seen": "2025-12-06T16:52:33Z"
+  },
+  "/dev/video0": {
+    "board_fqbn": null,
+    "board_name": "IW 3000: IW 3000",
+    "vendor_id": null,
+    "product_id": null,
+    "description": "IW 3000: IW 3000",
+    "type": "camera",
+    "last_seen": "2025-12-06T16:52:33Z"
+  }
+}
 ```
 
 ## Commands
@@ -54,6 +133,24 @@ Endpoints:
 - `GET /ports` - Serial-Ports scannen
 - `GET /status` - Agent-Status
 - `GET /config` - Aktuelle Config
+
+## 🛰️ Camera Module
+
+Das neue `camera_module.py` sucht per USB-Port-Scan nach `/dev/video*`-Geräten,
+liefert einen lokalen Stream-Endpunkt (z.B. `http://127.0.0.1:8090/stream/webcam?device=/dev/video0`)
+und kann die Endpunkte per Webhook an das Laravel-Backend melden.
+
+```bash
+python camera_module.py             # Gibt verfügbare Kameras + Endpunkte aus
+python camera_module.py --serve     # Startet FastAPI (CORS-enabled) auf Host/Port aus .env
+python camera_module.py --publish   # Meldet die Kamera-Endpunkte an $LARAVEL_BASE_URL/api/growdash/agent/webcams
+```
+
+Die Kamera-Endpunkte werden für jedes gepairte Device nur dann gemeldet, wenn sowohl
+`DEVICE_PUBLIC_ID` als auch `DEVICE_TOKEN` in der `.env` stehen. Die konfigurierbare
+`webcam_endpoint_prefix` (Standard `/stream/webcam`) erlaubt die spätere Integration eines
+echten MJPEG-Proxys. `FastAPI`-Endpoints geben ausschließlich die Informationen zurück,
+nicht den Rohstream selbst.
 
 ## Architecture
 
@@ -95,6 +192,84 @@ cd growdash
 - ✅ **Log Batching** - Sendet Logs periodisch ans Backend
 - ✅ **Multi-Device Support** - Automatisches Scannen und Verwalten mehrerer USB-Devices
 - ✅ **Port-Scanner API** - Dynamische Port-Erkennung für Frontend-Integration
+- ✅ **Board-Registry** - Persistente Port→Board-Zuordnung über Neustarts hinweg
+- ✅ **Kamera-Integration** - USB-Webcam-Erkennung und Stream-Endpoints
+
+## 🗂️ Board Registry & Device Management
+
+Die Board-Registry ist ein zentrales System zur Verwaltung aller angeschlossenen Hardware-Devices:
+
+### Features
+
+- **Persistente Speicherung** - Device-Mappings bleiben über Neustarts erhalten
+- **Automatische Erkennung** - Scannt Serial-Ports UND Video-Devices
+- **Multi-Device Support** - Verwaltet mehrere Arduinos und Kameras gleichzeitig
+- **Smart Defaults** - FirmwareManager nutzt Registry für Board/Port-Parameter
+- **Vereinheitlichte API** - Ein Endpoint für alle Devices (Serial + Cameras)
+
+### FastAPI Endpoints
+
+Das Kamera-Modul bietet zusätzlich Endpoints für Device-Management:
+
+```bash
+# Kamera-Modul als API-Server starten
+python camera_module.py --serve
+
+# Endpoints:
+GET  /devices          # Alle Devices (Serial + Cameras) aus Registry
+POST /devices/refresh  # Registry neu scannen
+GET  /webcams          # Nur Kameras (Legacy)
+GET  /webcam-endpoint  # Einzelne Kamera-URL
+```
+
+### Beispiel-Response `/devices`
+
+```json
+{
+  "success": true,
+  "total_devices": 35,
+  "serial_count": 33,
+  "camera_count": 2,
+  "devices": {
+    "serial_ports": [
+      {
+        "port": "/dev/ttyACM0",
+        "board_fqbn": "arduino:avr:uno",
+        "board_name": "Arduino Uno",
+        "vendor_id": "2341",
+        "product_id": "0043",
+        "description": "Arduino Uno",
+        "last_seen": "2025-12-06T16:52:33Z"
+      }
+    ],
+    "cameras": [
+      {
+        "device": "/dev/video0",
+        "name": "IW 3000: IW 3000",
+        "endpoint": "http://127.0.0.1:8090/stream/webcam?device=%2Fdev%2Fvideo0",
+        "description": "IW 3000: IW 3000",
+        "last_seen": "2025-12-06T16:52:33Z"
+      }
+    ]
+  }
+}
+```
+
+### Integration in FirmwareManager
+
+Die Board-Registry wird automatisch beim Agent-Start geladen:
+
+```python
+# Automatischer Scan beim Start
+board_registry.refresh()
+
+# Smart Defaults in FirmwareManager
+compile_sketch(sketch_path)  # Board aus Registry
+upload_hex(hex_file)         # Board + Port aus Registry
+compile_and_upload(sketch)   # Board + Port aus Registry
+
+# Fallback: config.serial_port wenn Registry leer
+```
 
 ## 🔌 Multi-Device Modus
 

@@ -24,6 +24,7 @@ import requests
 from pydantic_settings import BaseSettings
 from pydantic import Field
 from collections import deque
+from board_registry import BoardRegistry
 
 # Logging konfigurieren
 logging.basicConfig(
@@ -62,6 +63,11 @@ class AgentConfig(BaseSettings):
     # Firmware Update (sichere Kapselung)
     firmware_dir: str = Field(default="./firmware")
     arduino_cli_path: str = Field(default="/usr/local/bin/arduino-cli")
+    board_registry_path: str = Field(default="./boards.json")
+    
+    # Board Registry Auto-Refresh
+    auto_refresh_registry: bool = Field(default=False)
+    registry_max_age: int = Field(default=3600)  # 1 Stunde
     
     class Config:
         env_file = ".env"
@@ -503,10 +509,11 @@ class FirmwareManager:
         "actuator": "GrowDash_Actuators.ino",
     }
     
-    def __init__(self, config: AgentConfig):
+    def __init__(self, config: AgentConfig, board_registry: 'BoardRegistry' = None):
         self.config = config
         self.firmware_dir = config.firmware_dir
         self.arduino_cli = config.arduino_cli_path
+        self.board_registry = board_registry
         
         # Prüfen, ob arduino-cli verfügbar ist
         if not os.path.exists(self.arduino_cli):
@@ -675,17 +682,27 @@ class FirmwareManager:
         except Exception as e:
             logger.error(f"Fehler beim Loggen des Flash-Events: {e}")
 
-    def compile_sketch(self, sketch_path: str, board: str = "arduino:avr:uno") -> Tuple[bool, str]:
+    def compile_sketch(self, sketch_path: str, board: str = None) -> Tuple[bool, str]:
         """
         Kompiliert ein Arduino-Sketch ohne Upload.
         
         Args:
             sketch_path: Pfad zur .ino Datei
-            board: Board FQBN (z.B. arduino:avr:uno)
+            board: Board FQBN (optional, wird aus Registry geholt wenn nicht angegeben)
             
         Returns:
             (success, message)
         """
+        # Board aus Registry holen wenn nicht angegeben
+        if not board and self.board_registry:
+            default_port = self.board_registry.get_default_port()
+            if default_port:
+                board_info = self.board_registry.get_board(default_port)
+                if board_info:
+                    board = board_info.get("board_fqbn", "arduino:avr:uno")
+        if not board:
+            board = "arduino:avr:uno"
+        
         logger.info(f"Kompiliere Sketch: {sketch_path} für Board: {board}")
         
         success, out, err = self._run_arduino_cli(
@@ -701,18 +718,32 @@ class FirmwareManager:
         logger.info(msg)
         return True, f"{msg}\n{out}"
     
-    def upload_hex(self, hex_file: str, board: str, port: str) -> Tuple[bool, str]:
+    def upload_hex(self, hex_file: str, board: str = None, port: str = None) -> Tuple[bool, str]:
         """
         Uploaded kompilierte .hex Datei zum Arduino.
         
         Args:
             hex_file: Pfad zur .hex Datei
-            board: Board FQBN
-            port: Serial-Port
+            board: Board FQBN (optional, aus Registry)
+            port: Serial-Port (optional, aus Registry oder Config)
             
         Returns:
             (success, message)
         """
+        # Port/Board aus Registry holen wenn nicht angegeben
+        if not port:
+            if self.board_registry:
+                port = self.board_registry.get_default_port()
+            if not port:
+                port = self.config.serial_port
+        
+        if not board and self.board_registry:
+            board_info = self.board_registry.get_board(port)
+            if board_info:
+                board = board_info.get("board_fqbn", "arduino:avr:uno")
+        if not board:
+            board = "arduino:avr:uno"
+        
         logger.info(f"Uploade HEX: {hex_file} -> {port} (Board: {board})")
         
         success, out, err = self._run_arduino_cli(
@@ -728,18 +759,32 @@ class FirmwareManager:
         logger.info(msg)
         return True, f"{msg}\n{out}"
     
-    def compile_and_upload(self, sketch_path: str, board: str, port: str) -> Tuple[bool, str]:
+    def compile_and_upload(self, sketch_path: str, board: str = None, port: str = None) -> Tuple[bool, str]:
         """
         Kompiliert UND uploaded Sketch in einem Schritt.
         
         Args:
             sketch_path: Pfad zur .ino Datei
-            board: Board FQBN
-            port: Serial-Port
+            board: Board FQBN (optional, aus Registry)
+            port: Serial-Port (optional, aus Registry oder Config)
             
         Returns:
             (success, message)
         """
+        # Port/Board aus Registry holen wenn nicht angegeben
+        if not port:
+            if self.board_registry:
+                port = self.board_registry.get_default_port()
+            if not port:
+                port = self.config.serial_port
+        
+        if not board and self.board_registry:
+            board_info = self.board_registry.get_board(port)
+            if board_info:
+                board = board_info.get("board_fqbn", "arduino:avr:uno")
+        if not board:
+            board = "arduino:avr:uno"
+        
         logger.info(f"Compile + Upload: {sketch_path} -> {port} (Board: {board})")
         
         # Compile
@@ -827,9 +872,31 @@ class HardwareAgent:
     def __init__(self, config_override=None, device_info=None):
         self.config = config_override if config_override else AgentConfig()
         self.device_info = device_info  # Optional USBDeviceInfo
+        
+        # Board Registry initialisieren (lädt bestehende Registry sofort)
+        self.board_registry = BoardRegistry(
+            registry_file=self.config.board_registry_path,
+            arduino_cli=self.config.arduino_cli_path,
+            auto_refresh=False  # Kein automatischer Refresh beim Init
+        )
+        
+        # Konditionaler Refresh: nur wenn Registry veraltet ist
+        if self.config.auto_refresh_registry:
+            # Synchroner Refresh wenn explizit gewünscht
+            self.board_registry.refresh_if_stale(max_age_seconds=self.config.registry_max_age)
+        else:
+            # Asynchroner Refresh im Hintergrund (non-blocking)
+            age = self.board_registry.get_registry_age()
+            if age is None or age > self.config.registry_max_age:
+                def _on_refresh_done(count):
+                    logger.info(f"✅ Hintergrund-Scan abgeschlossen: {count} Devices")
+                self.board_registry.async_refresh(callback=_on_refresh_done)
+            else:
+                logger.info(f"📋 Board-Registry geladen: {len(self.board_registry.get_all_boards())} Devices (Alter: {age}s)")
+        
         self.serial = SerialProtocol(self.config.serial_port, self.config.baud_rate)
         self.laravel = LaravelClient(self.config)
-        self.firmware_mgr = FirmwareManager(self.config)
+        self.firmware_mgr = FirmwareManager(self.config, self.board_registry)
         # Set FirmwareManager reference in LaravelClient for centralized board detection
         self.laravel._firmware_mgr = self.firmware_mgr
         self._stop_event = threading.Event()
