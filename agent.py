@@ -49,7 +49,6 @@ class AgentConfig(BaseSettings):
     baud_rate: int = Field(default=9600)
     
     # Agent Verhalten
-    telemetry_interval: int = Field(default=10)
     command_poll_interval: int = Field(default=5)
     
     # Lokale API (nur für Debugging)
@@ -79,7 +78,6 @@ class SerialProtocol:
         self.port = port
         self.baud = baud
         self.ser: Optional[serial.Serial] = None
-        ## REMOVE self.receive_queue = Queue()  # Für Telemetrie
         self.command_response_queue = Queue()  # Für Command-Antworten
         self._stop_event = threading.Event()
         self._reader_thread = None
@@ -134,54 +132,9 @@ class SerialProtocol:
                 self.command_response_queue.put(line)
                 return
             
-            telemetry = {
-                "measured_at": datetime.now(timezone.utc).isoformat(),
-                "raw": line
-            }
-            
-            # WaterLevel Status
-            if "WaterLevel:" in line:
-                value = line.split(":")[-1].strip()
-                telemetry["sensor_key"] = "water_level"
-                telemetry["value"] = float(value)
-                telemetry["unit"] = "percent"
-                
-            # TDS und Temperatur
-            elif "TDS=" in line:
-                parts = line.split()
-                for part in parts:
-                    if "TDS=" in part:
-                        telemetry["sensor_key"] = "tds"
-                        telemetry["value"] = float(part.split("=")[1])
-                        telemetry["unit"] = "ppm"
-                    elif "TempC=" in part:
-                        temp_val = part.split("=")[1]
-                        if temp_val != "NaN":
-                            # Separate Telemetrie für Temperatur
-                            self.receive_queue.put({
-                                "measured_at": datetime.now(timezone.utc).isoformat(),
-                                "sensor_key": "temperature",
-                                "value": float(temp_val),
-                                "unit": "celsius",
-                                "raw": line
-                            })
-            
-            # Spray Status
-            elif "Spray:" in line:
-                telemetry["sensor_key"] = "spray_status"
-                telemetry["value"] = 1 if "ON" in line else 0
-                telemetry["unit"] = "boolean"
-                
-            # Fill/Tab Status
-            elif "Tab:" in line:
-                telemetry["sensor_key"] = "fill_status"
-                telemetry["value"] = 1 if "ON" in line else 0
-                telemetry["unit"] = "boolean"
-            
-            # In Queue legen, wenn Sensor identifiziert wurde
-            if "sensor_key" in telemetry:
-                self.receive_queue.put(telemetry)
-                logger.debug(f"Telemetrie geparst: {telemetry['sensor_key']} = {telemetry['value']}")
+            # Telemetrie-Parsing (Legacy - deaktiviert)
+            # K\u00f6nnte sp\u00e4ter reaktiviert werden, wenn Laravel-Endpoint existiert
+            logger.debug(f"Serial RX: {line}")
             
         except Exception as e:
             logger.error(f"Fehler beim Parsen von '{line}': {e}")
@@ -251,13 +204,6 @@ class SerialProtocol:
             logger.error(f"Fehler beim Senden von '{command}': {e}")
             self._waiting_for_response = False
             return None
-    
-    def get_telemetry_batch(self, max_items: int = 100) -> List[Dict]:
-        """Telemetrie-Batch aus Queue holen"""
-        batch = []
-        while not self.receive_queue.empty() and len(batch) < max_items:
-            batch.append(self.receive_queue.get())
-        return batch
     
     def close(self):
         """Verbindung schließen"""
@@ -351,10 +297,13 @@ class LaravelClient:
     def start_pairing_bootstrap(self) -> Optional[Dict[str, Any]]:
         """/api/agents/bootstrap mit Details aufrufen und Bootstrap-Code erhalten"""
         url = f"{self.config.laravel_base_url}/api/agents/bootstrap"
+                    import socket
+                    device_name = f"GrowDash {socket.gethostname()}"
+            
         try:
             payload = {
                 "bootstrap_id": self._make_bootstrap_id(),
-                "name": "GrowDash Device",
+                "name": device_name,
                 "board_type": self._detect_board_name_for_bootstrap(),
                 "capabilities": {
                     "sensors": ["water_level", "tds", "temperature"],
@@ -396,11 +345,14 @@ class LaravelClient:
     def register_device_from_agent(self, bearer_token: str) -> Optional[Dict[str, Any]]:
         """/api/growdash/devices/register → public_id + agent_token (PLAINTEXT)"""
         url = f"{self.config.laravel_base_url}/api/growdash/devices/register"
+                    import socket
+                    device_name = f"GrowDash {socket.gethostname()}"
+            
         try:
             headers = {"Authorization": f"Bearer {bearer_token}", "Content-Type": "application/json"}
             payload = {
                 "bootstrap_id": self._make_bootstrap_id(),
-                "name": "GrowDash Device",
+                "name": device_name,
                 "board_type": self._detect_board_name_for_bootstrap(),
                 "capabilities": {
                     "board_name": self._detect_board_name_for_bootstrap(),
@@ -480,25 +432,6 @@ class LaravelClient:
         except Exception as e:
             logger.error(f"Fehler beim Melden des Ergebnisses für {command_id}: {e}")
     
-    def send_log(self, level: str, message: str):
-        """Log-Nachricht an Laravel senden"""
-        try:
-            self.session.post(
-                f"{self.base_url}/logs",
-                json={
-                    "logs": [
-                        {
-                            "level": level,
-                            "message": message,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        }
-                    ]
-                },
-                timeout=5,
-            )
-        except Exception:
-            pass  # Logs sind nicht kritisch
-
     def send_logs_batch(self, items: List[Dict[str, Any]]):
         """Mehrere Logs in einem Request senden"""
         if not items:
@@ -549,35 +482,6 @@ class LaravelClient:
                 
         except Exception as e:
             logger.error(f"Heartbeat-Fehler: {e}")
-            return False
-
-    def send_capabilities(self, caps: Dict[str, Any], device_info=None) -> bool:
-        """Capabilities an Backend senden"""
-        try:
-            payload = {"capabilities": caps}
-            
-            # Hardware-Info hinzufügen wenn verfügbar
-            if device_info:
-                payload["board_type"] = device_info.board_type
-                payload["port"] = device_info.port
-                payload["vendor_id"] = device_info.vendor_id
-                payload["product_id"] = device_info.product_id
-                payload["description"] = device_info.description
-            
-            r = self.session.post(
-                f"{self.base_url}/capabilities",
-                json=payload,
-                timeout=10,
-            )
-            if r.status_code >= 400:
-                try:
-                    logger.error(f"Capabilities Error {r.status_code}: {r.text}")
-                except Exception:
-                    logger.error(f"Capabilities Error {r.status_code} (no body)")
-                r.raise_for_status()
-            return True
-        except Exception as e:
-            logger.error(f"Capabilities-Übertragung fehlgeschlagen: {e}")
             return False
     
     def get_available_ports(self) -> List[Dict[str, str]]:
@@ -960,14 +864,6 @@ class HardwareAgent:
         
         # Startup Health Check
         self._startup_health_check()
-        
-        # Capabilities beim Start melden (best effort)
-        try:
-            caps = self._detect_capabilities()
-            if caps:
-                self.laravel.send_capabilities(caps, self.device_info)
-        except Exception:
-            pass
     
     def _startup_health_check(self):
         """Startup-Health-Check: Verbindung zu Laravel testen"""
@@ -1074,12 +970,6 @@ class HardwareAgent:
             f.writelines(out)
         logger.info("✅ Credentials in .env gespeichert")
 
-    def _detect_capabilities(self) -> Dict[str, Any]:
-        board = self.firmware_mgr._detect_board_name()
-        sensors = ["water_level", "tds", "temperature"]
-        actuators = ["spray_pump", "fill_valve"]
-        return {"board_name": board, "sensors": sensors, "actuators": actuators}
-
     def _run_onboarding_wizard(self):
         mode = (self.config.onboarding_mode or "PAIRING").strip().upper()
         if mode == "PRECONFIGURED":
@@ -1166,20 +1056,20 @@ class HardwareAgent:
     
     def execute_command(self, command: Dict) -> tuple[bool, str]:
         """
-        Befehl ausführen und in Arduino-Befehle übersetzen.
+        Befehl ausführen.
         
         Unterstützte Befehle:
         - serial_command: Direkter Serial-Befehl ans Arduino (params.command)
         - firmware_update: Firmware flashen (nur erlaubte Module)
-        
-        Legacy-Befehle (für Kompatibilität):
-        - spray_on, spray_off, fill_start, fill_stop, request_status, request_tds
+        - arduino_compile: Arduino-Code kompilieren
+        - arduino_upload: Kompilierte .hex hochladen
+        - arduino_compile_upload: Kompilieren + Upload in einem Schritt
         """
         cmd_type = command.get("type", "")
         params = command.get("params", {})
         
         try:
-            # Haupt-Befehlstyp: serial_command (neue Laravel-API)
+            # Serial Command - Arduino kennt alle Befehle selbst
             if cmd_type == "serial_command":
                 arduino_command = params.get("command", "")
                 if not arduino_command:
@@ -1193,39 +1083,6 @@ class HardwareAgent:
                 else:
                     # Auch bei Timeout als Erfolg werten (Befehl wurde gesendet)
                     return True, f"Command '{arduino_command}' sent (no response)"
-            
-            # Legacy: Spray-Befehle
-            elif cmd_type == "spray_on":
-                duration = params.get("duration", 0)
-                if duration > 0:
-                    self.serial.send_command(f"Spray {int(duration * 1000)}")  # ms
-                    return True, f"Spray für {duration}s aktiviert"
-                else:
-                    self.serial.send_command("SprayOn")
-                    return True, "Spray aktiviert"
-                    
-            elif cmd_type == "spray_off":
-                self.serial.send_command("SprayOff")
-                return True, "Spray deaktiviert"
-            
-            # Legacy: Füll-Befehle
-            elif cmd_type == "fill_start":
-                target_liters = params.get("target_liters", 5.0)
-                self.serial.send_command(f"FillL {target_liters}")
-                return True, f"Füllen gestartet (Ziel: {target_liters}L)"
-                
-            elif cmd_type == "fill_stop":
-                self.serial.send_command("CancelFill")
-                return True, "Füllen gestoppt"
-            
-            # Legacy: Status-Abfragen
-            elif cmd_type == "request_status":
-                self.serial.send_command("Status")
-                return True, "Status angefordert"
-                
-            elif cmd_type == "request_tds":
-                self.serial.send_command("TDS")
-                return True, "TDS-Messung angefordert"
             
             # Firmware-Update (sichere Kapselung)
             elif cmd_type == "firmware_update":
@@ -1373,21 +1230,6 @@ class HardwareAgent:
             logger.error(f"Fehler bei Befehlsausführung '{cmd_type}': {e}")
             return False, str(e)
     
-    def telemetry_loop(self):
-        """Telemetrie-Sendeloop (Hintergrund-Thread)"""
-        while not self._stop_event.is_set():
-            try:
-                # Telemetrie sammeln und senden
-                batch = self.serial.get_telemetry_batch()
-                if batch:
-                    self.laravel.send_telemetry(batch)
-                
-                time.sleep(self.config.telemetry_interval)
-                
-            except Exception as e:
-                logger.error(f"Fehler in Telemetrie-Loop: {e}")
-                time.sleep(5)
-    
     def command_loop(self):
         """Befehls-Polling-Loop (Hintergrund-Thread)"""
         while not self._stop_event.is_set():
@@ -1462,18 +1304,15 @@ class HardwareAgent:
     def run(self):
         """Agent starten (Hauptschleife)"""
         # Loops in separaten Threads starten
-        telemetry_thread = threading.Thread(target=self.telemetry_loop, daemon=True)
         command_thread = threading.Thread(target=self.command_loop, daemon=True)
         heartbeat_thread = threading.Thread(target=self.heartbeat_loop, daemon=True)
         logs_thread = threading.Thread(target=self.logs_loop, daemon=True)
         
-        telemetry_thread.start()
         command_thread.start()
         heartbeat_thread.start()
         logs_thread.start()
         
         logger.info("Agent läuft... (Strg+C zum Beenden)")
-        logger.info(f"  Telemetrie: alle {self.config.telemetry_interval}s")
         logger.info(f"  Befehle: alle {self.config.command_poll_interval}s")
         logger.info(f"  Heartbeat: alle 30s")
         
