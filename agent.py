@@ -1208,7 +1208,7 @@ class HardwareAgent:
         """Sammelt Logs und sendet sie periodisch als Batch"""
         while not self._stop_event.is_set():
             try:
-                time.sleep(60)
+                time.sleep(30)
                 if not self._log_buffer:
                     continue
                 items = []
@@ -1216,7 +1216,7 @@ class HardwareAgent:
                     items.append(self._log_buffer.popleft())
                 self.laravel.send_logs_batch(items)
             except Exception:
-                time.sleep(60)
+                time.sleep(30)
     
     def run(self):
         """Agent starten (Hauptschleife)"""
