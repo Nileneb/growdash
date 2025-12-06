@@ -792,11 +792,15 @@ class HardwareAgent:
         """
         Erstellt ein temporäres Sketch-Verzeichnis und Datei.
         
+        Der Sketch-Name wird IMMER aus dem Verzeichnisnamen abgeleitet (Arduino-Konvention),
+        der sketch_name Parameter wird ignoriert.
+        
         Returns:
             (sketch_dir, sketch_file)
         """
         sketch_dir = Path(tempfile.mkdtemp(prefix="arduino_sketch_"))
-        sketch_file = sketch_dir / f"{sketch_name}.ino"
+        # Arduino erwartet: Sketch-Name == Verzeichnis-Name
+        sketch_file = sketch_dir / f"{sketch_dir.name}.ino"
         sketch_file.write_text(code)
         logger.info(f"Sketch erstellt: {sketch_file}")
         return sketch_dir, sketch_file
