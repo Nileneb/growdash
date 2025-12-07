@@ -13,6 +13,7 @@ import logging
 import subprocess
 import tempfile
 import shutil
+import socket
 from contextlib import contextmanager
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ from pydantic_settings import BaseSettings
 from pydantic import Field
 from collections import deque
 from board_registry import BoardRegistry
+from camera_module import CameraConfig, CameraEndpointBuilder, CameraWebhookPublisher
 
 # Logging konfigurieren
 logging.basicConfig(
@@ -64,6 +66,10 @@ class AgentConfig(BaseSettings):
     firmware_dir: str = Field(default="./firmware")
     arduino_cli_path: str = Field(default="/usr/local/bin/arduino-cli")
     board_registry_path: str = Field(default="./boards.json")
+    # Camera Module Auto-Start
+    auto_start_camera_module: bool = Field(default=True)
+    camera_module_path: str = Field(default="./camera_module.py")
+    camera_module_start_delay: float = Field(default=2.0)
     
     # Board Registry Auto-Refresh
     auto_refresh_registry: bool = Field(default=False)
@@ -889,6 +895,20 @@ class HardwareAgent:
         self.firmware_mgr = FirmwareManager(self.config, self.board_registry)
         # Set FirmwareManager reference in LaravelClient for centralized board detection
         self.laravel._firmware_mgr = self.firmware_mgr
+        # Webcam Publisher (nutzt camera_module Payload/Headers)
+        cam_cfg = CameraConfig(
+            laravel_base_url=self.config.laravel_base_url,
+            laravel_api_path=self.config.laravel_api_path,
+            device_public_id=self.config.device_public_id,
+            device_token=self.config.device_token,
+            webcam_host="127.0.0.1",
+            webcam_port=8090,
+        )
+        self._cam_builder = CameraEndpointBuilder(cam_cfg)
+        self._cam_publisher = CameraWebhookPublisher(cam_cfg)
+        self._last_cam_hash: Optional[str] = None
+        self._camera_process = None
+        self._camera_process_started_here = False
         self._stop_event = threading.Event()
         self._log_buffer = deque(maxlen=500)
         
@@ -897,6 +917,8 @@ class HardwareAgent:
         
         # Startup Health Check
         self._startup_health_check()
+        # Kamera-Streaming-Server sicherstellen (optional)
+        self._ensure_camera_module_running()
     
     def _startup_health_check(self):
         """Startup-Health-Check: Verbindung zu Laravel testen"""
@@ -1265,6 +1287,12 @@ class HardwareAgent:
                     self.device_info,
                     logs_batch if logs_batch else None,
                 )
+
+                # Webcam-Webhook nur senden, wenn sich etwas geändert hat oder alle 5min
+                try:
+                    self._maybe_publish_webcams()
+                except Exception as exc:
+                    logger.warning(f"Webcam-Publish übersprungen: {exc}")
                 
                 if success:
                     logger.debug(f"✅ Heartbeat gesendet (uptime={uptime}s)")
@@ -1289,6 +1317,87 @@ class HardwareAgent:
                 self.laravel.send_logs_batch(items)
             except Exception:
                 time.sleep(30)
+
+    def _maybe_publish_webcams(self):
+        """Publisht Webcam-Endpunkte nur bei Änderungen oder alle 5 Minuten."""
+        # Snapshot aus Board-Registry (Kameras werden dort geführt)
+        boards = self.board_registry.get_all_boards()
+        cameras = []
+        for path, info in boards.items():
+            if info.get("type") == "camera":
+                cameras.append({
+                    "device": path,
+                    "name": info.get("board_name") or info.get("description") or "Webcam",
+                })
+
+        # Hash bilden
+        snap = json.dumps(sorted(cameras, key=lambda x: x.get("device")), sort_keys=True)
+        snap_hash = str(hash(snap))
+
+        now = time.time()
+        force = False
+        if not hasattr(self, "_last_cam_publish_ts"):
+            self._last_cam_publish_ts = 0
+        if now - getattr(self, "_last_cam_publish_ts", 0) > 300:
+            force = True
+
+        if snap_hash == self._last_cam_hash and not force:
+            return
+
+        # Publish ausführen
+        ok = self._cam_publisher.publish(cameras, self._cam_builder)
+        if ok:
+            self._last_cam_hash = snap_hash
+            self._last_cam_publish_ts = now
+        else:
+            logger.warning("Webcam-Webhooks konnten nicht gesendet werden")
+
+    def _is_camera_module_up(self) -> bool:
+        """Prüft, ob der MJPEG-Server bereits läuft."""
+        try:
+            with socket.create_connection(
+                (self._cam_builder.config.webcam_host, self._cam_builder.config.webcam_port),
+                timeout=0.5
+            ):
+                return True
+        except OSError:
+            return False
+
+    def _ensure_camera_module_running(self):
+        """Startet camera_module.py --serve falls nicht aktiv (optional)."""
+        if not self.config.auto_start_camera_module:
+            return
+        if self._is_camera_module_up():
+            return
+
+        cm_path = Path(self.config.camera_module_path).resolve()
+        if not cm_path.exists():
+            logger.warning(f"camera_module.py nicht gefunden unter {cm_path}")
+            return
+
+        try:
+            cmd = [sys.executable, str(cm_path), "--serve"]
+            env = os.environ.copy()
+            self._camera_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=env,
+            )
+            self._camera_process_started_here = True
+
+            # Kurz warten, damit Port-Scan/Kamera-Init nicht kollidiert
+            time.sleep(self.config.camera_module_start_delay)
+
+            # Max. 6s auf Port-Ready warten
+            for _ in range(30):
+                if self._is_camera_module_up():
+                    logger.info("camera_module Server läuft (auto-start)")
+                    return
+                time.sleep(0.2)
+            logger.warning("camera_module gestartet, aber Port 8090 nicht erreichbar")
+        except Exception as exc:
+            logger.error(f"camera_module konnte nicht gestartet werden: {exc}")
     
     def run(self):
         """Agent starten (Hauptschleife)"""
@@ -1314,6 +1423,11 @@ class HardwareAgent:
         """Agent stoppen"""
         self._stop_event.set()
         self.serial.close()
+        if self._camera_process_started_here and self._camera_process:
+            try:
+                self._camera_process.terminate()
+            except Exception:
+                pass
         logger.info("Agent gestoppt")
 
 def _install_log_handler(buffer: deque):

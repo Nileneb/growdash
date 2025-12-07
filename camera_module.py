@@ -189,9 +189,9 @@ class CameraWebhookPublisher:
         payload = {
             "webcams": [
                 {
-                    "device": cam["device"],
+                    "device_path": cam["device"],
+                    "stream_endpoint": endpoint_builder.build(cam),
                     "name": cam["name"],
-                    "endpoint": endpoint_builder.build(cam),
                 }
                 for cam in cameras
             ],
