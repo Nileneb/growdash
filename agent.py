@@ -22,6 +22,8 @@ from pathlib import Path
 import threading
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from pydantic_settings import BaseSettings
 from pydantic import Field
 from collections import deque
@@ -238,7 +240,9 @@ class LaravelClient:
     def __init__(self, config: AgentConfig):
         self.config = config
         self.base_url = f"{config.laravel_base_url}{config.laravel_api_path}"
-        self.session = requests.Session()
+        self.session = self._create_session()
+        self._last_session_reset = 0.0
+        self._reset_cooldown = 10.0
         
         # Device-Token-Auth in allen Requests
         self.set_device_headers(config.device_public_id, config.device_token)
@@ -246,6 +250,43 @@ class LaravelClient:
         self._cached_bootstrap_id: Optional[str] = None
         # FirmwareManager reference wird später in HardwareAgent gesetzt
         self._firmware_mgr: Optional['FirmwareManager'] = None
+
+    def _create_session(self) -> requests.Session:
+        """Erzeuge Session mit Retry-Adapter für transient errors."""
+        session = requests.Session()
+        retries = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[502, 503, 504],
+            allowed_methods=frozenset([
+                "HEAD",
+                "GET",
+                "PUT",
+                "DELETE",
+                "OPTIONS",
+                "TRACE",
+                "POST",
+            ]),
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retries, pool_connections=4, pool_maxsize=8)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        return session
+
+    def _reset_session(self, reason: str = ""):
+        """Reinitialisiere die HTTP-Session nach Fehlern mit Cooldown."""
+        now = time.time()
+        if now - self._last_session_reset < self._reset_cooldown:
+            return
+        try:
+            self.session.close()
+        except Exception:
+            pass
+        self.session = self._create_session()
+        self.set_device_headers(self.config.device_public_id, self.config.device_token)
+        self._last_session_reset = now
+        logger.warning(f"HTTP-Session neu aufgebaut ({reason})")
 
     # -------- Helper Methods (Bootstrap / Board Detection) --------
     def _make_bootstrap_id(self) -> str:
@@ -379,6 +420,7 @@ class LaravelClient:
             
         except Exception as e:
             logger.error(f"Fehler beim Abrufen der Befehle: {e}")
+            self._reset_session(f"poll_commands: {e}")
             return []
     
     def report_command_result(self, command_id: str, success: bool, message: str = ""):
@@ -400,6 +442,7 @@ class LaravelClient:
             
         except Exception as e:
             logger.error(f"Fehler beim Melden des Ergebnisses für {command_id}: {e}")
+            self._reset_session(f"report_command_result: {e}")
     
     def send_logs_batch(self, items: List[Dict[str, Any]]):
         """Mehrere Logs in einem Request senden"""
@@ -411,8 +454,8 @@ class LaravelClient:
                 json={"logs": items},
                 timeout=8,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            self._reset_session(f"send_logs_batch: {e}")
     
     def send_heartbeat(self, last_state: Optional[Dict] = None, device_info=None, logs: Optional[List[Dict[str, Any]]] = None) -> bool:
         """
@@ -454,6 +497,7 @@ class LaravelClient:
                 
         except Exception as e:
             logger.error(f"Heartbeat-Fehler: {e}")
+            self._reset_session(f"heartbeat: {e}")
             return False
     
     def get_available_ports(self) -> List[Dict[str, str]]:
