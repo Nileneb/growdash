@@ -242,7 +242,8 @@ class LaravelClient:
         self.base_url = f"{config.laravel_base_url}{config.laravel_api_path}"
         self.session = self._create_session()
         self._last_session_reset = 0.0
-        self._reset_cooldown = 10.0
+        # Kürzeres Cooldown, damit nach Laravel-Restarts schneller neue Sessions entstehen
+        self._reset_cooldown = 2.0
         
         # Device-Token-Auth in allen Requests
         self.set_device_headers(config.device_public_id, config.device_token)
@@ -405,6 +406,18 @@ class LaravelClient:
                 f"{self.base_url}/commands/pending",
                 timeout=10
             )
+
+            # Nach Server-Restarts können 5xx/502 auftreten – Session neu aufbauen
+            if response.status_code >= 500:
+                logger.warning(f"poll_commands 5xx: {response.status_code}")
+                self._reset_session(f"poll_commands status {response.status_code}")
+                return []
+            if response.status_code in (401, 403):
+                logger.warning(f"poll_commands auth-fehler: {response.status_code}")
+                self._reset_session(f"poll_commands auth {response.status_code}")
+                return []
+
+            # Für alle anderen Status raise wie zuvor, damit Exceptions geloggt werden
             response.raise_for_status()
             
             data = response.json()
