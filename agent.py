@@ -1564,17 +1564,13 @@ def run_multi_device():
 if __name__ == "__main__":
     # Prüfe ob Multi-Device-Modus aktiviert ist
     multi_device_mode = os.getenv('MULTI_DEVICE_MODE', 'false').lower() == 'true'
+    ok = False
     
     if multi_device_mode:
         # Multi-Device-Modus: USB-Scanner verwaltet mehrere Devices
         ok = run_multi_device()
-        if ok:
-            sys.exit(0)
         logger.info("Starte stattdessen Single-Device-Modus...")
-    else:
-        # Single-Device-Modus (Legacy)
-        # Log-Batching aktivieren
-        # Hinweis: Handler wird im Konstruktor gesetzt, nachdem Buffer existiert
-        agent = HardwareAgent()
-        _install_log_handler(agent._log_buffer)
-        agent.run()
+    # Single-Device-Modus (Fallback oder Default)
+    agent = HardwareAgent()
+    _install_log_handler(agent._log_buffer)
+    agent.run()
