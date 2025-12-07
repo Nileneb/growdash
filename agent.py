@@ -255,8 +255,11 @@ class LaravelClient:
         """Erzeuge Session mit Retry-Adapter für transient errors."""
         session = requests.Session()
         retries = Retry(
-            total=3,
-            backoff_factor=0.5,
+            total=1,  # minimal halten, um Backend nicht zu überlasten
+            connect=2,
+            read=1,
+            status=1,
+            backoff_factor=0.2,
             status_forcelist=[502, 503, 504],
             allowed_methods=frozenset([
                 "HEAD",
@@ -269,7 +272,7 @@ class LaravelClient:
             ]),
             raise_on_status=False,
         )
-        adapter = HTTPAdapter(max_retries=retries, pool_connections=4, pool_maxsize=8)
+        adapter = HTTPAdapter(max_retries=retries, pool_connections=2, pool_maxsize=4)
         session.mount("http://", adapter)
         session.mount("https://", adapter)
         return session
