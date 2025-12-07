@@ -153,7 +153,10 @@ class BoardRegistry:
         base = Path("/dev")
         if not base.exists():
             return cameras
-        
+        # Mehrere /dev/video* Einträge können zur selben physischen Kamera gehören
+        # (z.B. separate Knoten für MJPEG/H264/Metadata). Wir deduplizieren über
+        # den gemeinsamen Gerätepfad in /sys, damit jede Kamera nur einmal erscheint.
+        seen_parents = set()
         for entry in sorted(base.iterdir()):
             if not entry.name.startswith("video"):
                 continue
@@ -167,7 +170,18 @@ class BoardRegistry:
                     friendly_name = name_file.read_text(encoding="utf-8", errors="ignore").strip()
                 except:
                     pass
-            
+            # Parent-Gerätepfad bestimmen und als Deduplikations-Key nutzen
+            parent_path = Path(f"/sys/class/video4linux/{entry.name}/device")
+            try:
+                parent_key = str(parent_path.resolve())
+            except Exception:
+                parent_key = str(parent_path)
+
+            if parent_key in seen_parents:
+                logger.debug(f"Überspringe Duplikat für Kamera {friendly_name} ({entry})")
+                continue
+
+            seen_parents.add(parent_key)
             cameras.append({
                 "device": str(entry),
                 "name": friendly_name,

@@ -29,6 +29,11 @@ SERIAL_PORT=/dev/ttyACM0
 BAUD_RATE=9600
 ARDUINO_CLI_PATH=/usr/local/bin/arduino-cli
 
+# Multi-Device (optional)
+MULTI_DEVICE_MODE=true
+USB_SCAN_INTERVAL=12000
+USB_DEVICE_MAP=/home/nileneb/growdash/devices_map.json
+
 # Board Registry (optional)
 BOARD_REGISTRY_PATH=./boards.json
 AUTO_REFRESH_REGISTRY=false     # true = synchroner Refresh beim Start
@@ -272,34 +277,32 @@ compile_and_upload(sketch)   # Board + Port aus Registry
 ```
 
 ## 🔌 Multi-Device Modus
+Der Agent kann mehrere USB-Serial-Devices parallel verwalten. Stabilitätsregeln:
 
-Der Agent kann **mehrere Arduino-Devices gleichzeitig** verwalten:
+- Scan auf **/dev/ttyACM*** und **/dev/ttyUSB*** (keine ttyS* → keine Crashes)
+- **Hotplug**: neue Ports starten automatisch, entfernte Ports werden gestoppt
+- **Credentials pro Port** optional via `USB_DEVICE_MAP` (JSON-Liste)
+- Fallback: Alle Ports nutzen `DEVICE_PUBLIC_ID`/`DEVICE_TOKEN` aus `.env`
 
 ```bash
-# Multi-Device-Modus aktivieren in .env
+# .env
 MULTI_DEVICE_MODE=true
-USB_SCAN_INTERVAL=12000  # Scan alle 12000s (3.33h)
+USB_SCAN_INTERVAL=12000          # Standard: 3.33h
+USB_DEVICE_MAP=/home/nileneb/growdash/devices_map.json  # optional
 
-# Agent im Multi-Device-Modus starten
+# Mapping-Beispiel (devices_map.json)
+[
+  {"port": "/dev/ttyACM0", "device_public_id": "xxx", "device_token": "yyy"},
+  {"port": "/dev/ttyUSB0", "device_public_id": "aaa", "device_token": "bbb"}
+]
+
+# Start
 ./grow_start.sh
 ```
 
-### Funktionsweise
-
-1. **Automatischer USB-Scan**
-   - Beim Start: Sofortiger Scan aller verfügbaren USB-Ports
-   - Periodisch: Alle 12000 Sekunden (konfigurierbar)
-2. **Device-Erkennung**
-   - Erkennt Arduino/USB-Serial-Devices automatisch
-   - Jedes Device erhält eindeutige ID: `growdash-{vendor_id}-{product_id}-{port}`
-3. **Separate Device-Instanzen**
-   - Für jeden erkannten Port wird ein eigener Thread gestartet
-   - Jedes Device hat separate SerialProtocol, LaravelClient, HardwareAgent
-4. **Hot-Plug Support**
-   - Neue Devices: Werden automatisch erkannt und gestartet
-   - Getrennte Devices: Thread wird sauber beendet, Device aus Laravel abgemeldet
-
-📖 **Detaillierte Dokumentation:** [docs/MULTI_DEVICE.md](docs/MULTI_DEVICE.md)
+Hinweise:
+- Kameras nutzen die Standard-Credentials; es gibt kein separates Kamera-Token-Feld.
+- Wenn ein Port nicht geöffnet werden kann, wird er übersprungen (kein Service-Absturz).
 
 ## 🔧 Systemanforderungen
 

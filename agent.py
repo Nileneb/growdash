@@ -452,11 +452,13 @@ class LaravelClient:
         if not items:
             return
         try:
-            self.session.post(
+            resp = self.session.post(
                 f"{self.base_url}/logs",
                 json={"logs": items},
                 timeout=8,
             )
+            if resp.status_code >= 500 or resp.status_code in (401, 403):
+                self._reset_session(f"send_logs_batch status {resp.status_code}")
         except Exception as e:
             self._reset_session(f"send_logs_batch: {e}")
     
@@ -491,12 +493,21 @@ class LaravelClient:
                 json=payload,
                 timeout=15
             )
-            
+            # Schnell auf Laravel-Restarts oder Auth-Probleme reagieren, indem wir
+            # die Session erneuern und mit kurzen Intervallen weiterpolling.
+            if response.status_code >= 500:
+                logger.warning(f"Heartbeat fehlgeschlagen: {response.status_code}")
+                self._reset_session(f"heartbeat status {response.status_code}")
+                return False
+            if response.status_code in (401, 403):
+                logger.warning(f"Heartbeat auth-fehler: {response.status_code}")
+                self._reset_session(f"heartbeat auth {response.status_code}")
+                return False
+
             if response.status_code == 200:
                 return True
-            else:
-                logger.warning(f"Heartbeat fehlgeschlagen: {response.status_code}")
-                return False
+            logger.warning(f"Heartbeat fehlgeschlagen: {response.status_code}")
+            return False
                 
         except Exception as e:
             logger.error(f"Heartbeat-Fehler: {e}")
@@ -930,12 +941,13 @@ class HardwareAgent:
         else:
             # Asynchroner Refresh im Hintergrund (non-blocking)
             age = self.board_registry.get_registry_age()
-            if age is None or age > self.config.registry_max_age:
-                def _on_refresh_done(count):
-                    logger.info(f"✅ Hintergrund-Scan abgeschlossen: {count} Devices")
-                self.board_registry.async_refresh(callback=_on_refresh_done)
-            else:
-                logger.info(f"📋 Board-Registry geladen: {len(self.board_registry.get_all_boards())} Devices (Alter: {age}s)")
+            def _on_refresh_done(count):
+                logger.info(f"✅ Hintergrund-Scan abgeschlossen: {count} Devices")
+
+            # Vorhandene Registry laden und trotzdem einen frischen Scan anstoßen,
+            # damit Kamera-Deduplikation & neue Ports sofort greifen.
+            logger.info(f"📋 Board-Registry geladen: {len(self.board_registry.get_all_boards())} Devices (Alter: {age}s)")
+            self.board_registry.async_refresh(callback=_on_refresh_done)
         
         self.serial = SerialProtocol(self.config.serial_port, self.config.baud_rate)
         self.laravel = LaravelClient(self.config)
