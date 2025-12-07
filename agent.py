@@ -1520,7 +1520,11 @@ def run_multi_device():
     Startet Agent im Multi-Device-Modus.
     Scannt USB-Ports und verwaltet mehrere Device-Instanzen.
     """
-    from usb_device_manager import USBDeviceManager
+    try:
+        from usb_device_manager import USBDeviceManager
+    except ModuleNotFoundError:
+        logger.error("usb_device_manager nicht vorhanden – fallback auf Single-Device-Modus")
+        return False
     
     # Lade Basis-Config
     config = AgentConfig()
@@ -1554,6 +1558,7 @@ def run_multi_device():
         logger.info("\n🛑 Beende Multi-Device Manager...")
         manager.stop()
         logger.info("✅ Alle Devices gestoppt")
+    return True
 
 
 if __name__ == "__main__":
@@ -1562,7 +1567,10 @@ if __name__ == "__main__":
     
     if multi_device_mode:
         # Multi-Device-Modus: USB-Scanner verwaltet mehrere Devices
-        run_multi_device()
+        ok = run_multi_device()
+        if ok:
+            sys.exit(0)
+        logger.info("Starte stattdessen Single-Device-Modus...")
     else:
         # Single-Device-Modus (Legacy)
         # Log-Batching aktivieren
