@@ -958,6 +958,8 @@ class HardwareAgent:
         self._camera_process_started_here = False
         self._stop_event = threading.Event()
         self._log_buffer = deque(maxlen=500)
+        self._hb_failures = 0
+        self._cmd_failures = 0
         
         logger.info(f"Agent gestartet für Device: {self.config.device_public_id}")
         logger.info(f"Laravel Backend: {self.config.laravel_base_url}{self.config.laravel_api_path}")
@@ -1285,6 +1287,8 @@ class HardwareAgent:
     
     def command_loop(self):
         """Befehls-Polling-Loop (Hintergrund-Thread)"""
+        base_interval = self.config.command_poll_interval
+        interval = base_interval
         while not self._stop_event.is_set():
             try:
                 # Befehle abrufen und ausführen
@@ -1305,18 +1309,25 @@ class HardwareAgent:
                     # Ergebnis melden
                     if cmd_id:
                         self.laravel.report_command_result(cmd_id, success, message)
+                # Erfolg -> Backoff zurücksetzen
+                self._cmd_failures = 0
+                interval = base_interval
                 
-                time.sleep(self.config.command_poll_interval)
+                time.sleep(interval)
                 
             except Exception as e:
                 logger.error(f"Fehler in Command-Loop: {e}")
-                time.sleep(5)
+                self._cmd_failures += 1
+                interval = min(base_interval + 5 * self._cmd_failures, 60)
+                time.sleep(interval)
     
     def heartbeat_loop(self):
         """Heartbeat-Loop (Hintergrund-Thread)"""
         import platform
         import psutil
         start_time = time.time()
+        base_interval = 30
+        interval = base_interval
         
         while not self._stop_event.is_set():
             try:
@@ -1334,22 +1345,28 @@ class HardwareAgent:
                     self.device_info,
                     logs_batch if logs_batch else None,
                 )
-
-                # Webcam-Webhook nur senden, wenn sich etwas geändert hat oder alle 5min
-                try:
-                    self._maybe_publish_webcams()
-                except Exception as exc:
-                    logger.warning(f"Webcam-Publish übersprungen: {exc}")
+                # Webcam-Publish nur bei gesundem Netzwerk versuchen
+                if success and self._hb_failures < 2:
+                    try:
+                        self._maybe_publish_webcams()
+                    except Exception as exc:
+                        logger.warning(f"Webcam-Publish übersprungen: {exc}")
                 
                 if success:
+                    self._hb_failures = 0
+                    interval = base_interval
                     logger.debug(f"✅ Heartbeat gesendet (uptime={uptime}s)")
+                else:
+                    self._hb_failures += 1
+                    interval = min(base_interval + 10 * self._hb_failures, 120)
                 
-                # Warte 30 Sekunden
-                time.sleep(30)
+                time.sleep(interval)
                 
             except Exception as e:
                 logger.error(f"Fehler in Heartbeat-Loop: {e}")
-                time.sleep(30)
+                self._hb_failures += 1
+                interval = min(base_interval + 10 * self._hb_failures, 120)
+                time.sleep(interval)
 
     def logs_loop(self):
         """Sammelt Logs und sendet sie periodisch als Batch"""
