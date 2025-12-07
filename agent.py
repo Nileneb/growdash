@@ -443,7 +443,7 @@ class LaravelClient:
             response = self.session.post(
                 f"{self.base_url}/heartbeat",
                 json=payload,
-                timeout=8
+                timeout=15
             )
             
             if response.status_code == 200:

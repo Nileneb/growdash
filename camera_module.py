@@ -200,7 +200,11 @@ class CameraWebhookPublisher:
         url = f"{self.config.laravel_base_url}{self.config.webcam_webhook_path}"
         try:
             response = self.session.post(url, json=payload, timeout=10)
-            response.raise_for_status()
+            if response.status_code >= 400:
+                logger.error(
+                    f"Webhook Fehler {response.status_code}: {response.text[:500]}"
+                )
+                response.raise_for_status()
             logger.info("Webcam-Endpunkte an das Backend gemeldet.")
             return True
         except Exception as exc:
