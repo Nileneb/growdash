@@ -105,4 +105,12 @@ pip install -q --upgrade pip || { echo "❌ Upgrade pip fehlgeschlagen"; exit 1;
 pip install -q -r requirements.txt || { echo "❌ Pip-Installation fehlgeschlagen"; exit 1; }
 
 echo "🚀 Starte GrowDash Agent..."
-python3 agent.py
+
+# Local API im Hintergrund starten (für Kamera-Streaming, Logs, etc.)
+python3 /home/nileneb/growdash/local_api.py &
+LOCAL_API_PID=$!
+echo "📡 Local API gestartet (PID: $LOCAL_API_PID)"
+
+# Agent im Vordergrund starten
+exec python3 /home/nileneb/growdash/agent.py
+python3 /home/nileneb/growdash/local_api.py &

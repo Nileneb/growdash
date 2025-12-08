@@ -1,6 +1,20 @@
 """
 GrowDash Camera Module
 ======================
+⚠️  DEPRECATED - Verwende stattdessen local_api.py für:
+    - On-Demand Kamera-Streaming (/stream/{device})
+    - Snapshots (/snapshot/{device})
+    - Unified Device-Scanning (/cameras, /ports, /devices)
+
+Dieses Modul wird noch vom Agent für CameraConfig, CameraEndpointBuilder
+und CameraWebhookPublisher genutzt, aber der FastAPI-Server (--serve)
+sollte nicht mehr verwendet werden.
+
+Migration:
+    Alt: python camera_module.py --serve (Port 8090)
+    Neu: python local_api.py (Port 8000)
+=========================================================================
+
 Hilfsscript, das USB-Webcams erkennt, den lokalen Stream-Endpunkt ausgibt
 und optional einem Laravel-Webhook meldet. Das Modul läuft separat von
 `agent.py` und liefert nur Informationen, damit der Agent die Kamera

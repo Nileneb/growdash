@@ -1,6 +1,68 @@
-# Laravel Agent API - Endpoints Reference
+# GrowDash API - Endpoints Reference
 
-## 🔐 Authentication
+## 📋 Übersicht
+
+Das System besteht aus zwei API-Schichten:
+
+1. **Laravel API** - Backend-Kommunikation (Agent → Laravel → Frontend)
+2. **Local API** - Lokale Endpoints (Laravel → Agent, Frontend → Agent)
+
+---
+
+## 🖥️ Local API (Port 8000)
+
+Unified API für Devices, Kameras und Logs. **Ersetzt die alte camera_module.py API.**
+
+### Authentication
+
+```http
+X-Device-Token: your-device-token
+# ODER
+Authorization: Bearer your-device-token
+# ODER
+?api_key=your-device-token
+```
+
+### Endpoints
+
+| Endpoint | Methode | Beschreibung |
+|----------|---------|--------------|
+| `/` | GET | API Info & Endpoints |
+| `/devices` | GET | Alle Devices (Serial + Kameras) |
+| `/ports` | GET | Serial-Ports |
+| `/cameras` | GET | Kameras mit Stream-URLs |
+| `/stream/{device}` | GET | MJPEG-Stream (on-demand) |
+| `/snapshot/{device}` | GET | Einzelbild (JPEG) |
+| `/streams/status` | GET | Aktive Streams |
+| `/logs` | GET | Logs abrufen (Pull-basiert) |
+| `/logs` | DELETE | Log-Buffer leeren |
+| `/status` | GET | System-Status |
+
+### Beispiele
+
+**Kameras auflisten:**
+```bash
+curl -H "X-Device-Token: xxx" http://localhost:8000/cameras
+```
+
+**Stream anschauen:**
+```bash
+# Im Browser öffnen:
+http://localhost:8000/stream/video0?api_key=xxx
+```
+
+**Logs abrufen (Round-Robin):**
+```bash
+# Erste Abfrage
+curl http://localhost:8000/logs?since=0
+
+# Response enthält `next_since` für nächste Abfrage
+curl http://localhost:8000/logs?since=42
+```
+
+---
+
+## 🔐 Laravel API Authentication
 
 Alle Requests nutzen **Device-Token-Auth**:
 

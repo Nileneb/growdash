@@ -128,13 +128,17 @@ class BoardRegistry:
         return None
     
     def _scan_serial_ports(self) -> List[Dict]:
-        """Scannt verfügbare Serial-Ports via pyserial"""
+        """Scannt verfügbare Serial-Ports via pyserial (nur ttyACM*/ttyUSB*)"""
         try:
             import serial.tools.list_ports as list_ports
             ports = []
             for port in list_ports.comports():
+                dev = port.device
+                # Nur echte USB-Serial-Ports (keine virtuellen ttyS*)
+                if not dev or not (dev.startswith("/dev/ttyACM") or dev.startswith("/dev/ttyUSB")):
+                    continue
                 ports.append({
-                    "port": port.device,
+                    "port": dev,
                     "description": port.description or "Unknown",
                     "vendor_id": f"{port.vid:04x}" if port.vid else None,
                     "product_id": f"{port.pid:04x}" if port.pid else None,
@@ -202,29 +206,17 @@ class BoardRegistry:
             logger.info("Starte Board-Registry-Refresh...")
             timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             updated_count = 0
+            
+            # WICHTIG: Alte Registry leeren um veraltete Einträge zu entfernen
+            # (z.B. duplizierte Kameras, abgesteckte Devices)
+            self._registry.clear()
         
-            # Serial-Ports scannen
+            # Serial-Ports scannen (nur ttyACM*/ttyUSB*)
             serial_ports = self._scan_serial_ports()
             for port_info in serial_ports:
                 port = port_info["port"]
                 
-                # Virtuelle Ports ohne VID/PID überspringen (ttyS*, etc.)
-                if not port_info.get("vendor_id") and not port_info.get("product_id"):
-                    # Cache als Empty Port
-                    self._registry[port] = {
-                        "board_fqbn": None,
-                        "board_name": "Empty Port",
-                        "vendor_id": None,
-                        "product_id": None,
-                        "description": port_info.get("description", "Virtual Serial Port"),
-                        "type": "serial",
-                        "last_seen": timestamp
-                    }
-                    updated_count += 1
-                    logger.debug(f"○ {port}: Empty Port (kein USB-Device)")
-                    continue
-                
-                # Board-Info erkennen (nur für echte USB-Devices)
+                # Board-Info erkennen
                 board_info = self._detect_board_for_port(port)
                 
                 # Falls Detection fehlschlägt, als Unknown markieren

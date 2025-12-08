@@ -475,7 +475,7 @@ class LaravelClient:
         except Exception as e:
             self._reset_session(f"send_logs_batch: {e}")
     
-    def send_heartbeat(self, last_state: Optional[Dict] = None, device_info=None, logs: Optional[List[Dict[str, Any]]] = None) -> bool:
+    def send_heartbeat(self, last_state: Optional[Dict] = None, device_info=None, logs: Optional[List[Dict[str, Any]]] = None, cameras: Optional[List[Dict]] = None) -> bool:
         """
         Heartbeat an Laravel senden (alle 30-60 Sekunden).
         Hält Device-Status auf "online" und aktualisiert last_seen_at.
@@ -484,6 +484,7 @@ class LaravelClient:
             last_state: Optional dict mit Systemstatus (uptime, memory, etc.)
             device_info: Optional USBDeviceInfo mit Hardware-Details
             logs: Optional Log-Batch, wird zusammen mit Heartbeat übertragen
+            cameras: Optional Liste von Kameras
             
         Returns:
             True wenn erfolgreich, False bei Fehler
@@ -492,6 +493,8 @@ class LaravelClient:
             payload = {"last_state": last_state} if last_state else {}
             if logs:
                 payload["logs"] = logs
+            if cameras:
+                payload["cameras"] = cameras
             
             # Hardware-Info hinzufügen wenn verfügbar
             if device_info:
@@ -1199,19 +1202,20 @@ class HardwareAgent:
         
         try:
             # Serial Command - Arduino kennt alle Befehle selbst
+            # Fire and Forget: senden ohne auf Antwort zu warten
+            # Arduino-Output wird über den Serial Reader Thread geloggt
             if cmd_type == "serial_command":
                 arduino_command = params.get("command", "")
                 if not arduino_command:
                     return False, "Kein command in params angegeben"
                 
-                # An Arduino senden und auf Antwort warten
-                response = self.serial.send_command_with_response(arduino_command, timeout=5.0)
+                # An Arduino senden (Fire and Forget)
+                success = self.serial.send_command(arduino_command)
                 
-                if response is not None:
-                    return True, f"Arduino: {response}"
+                if success:
+                    return True, f"Command '{arduino_command}' gesendet"
                 else:
-                    # Auch bei Timeout als Erfolg werten (Befehl wurde gesendet)
-                    return True, f"Command '{arduino_command}' sent (no response)"
+                    return False, f"Konnte Command '{arduino_command}' nicht senden"
             
             # Firmware-Update (sichere Kapselung)
             elif cmd_type == "firmware_update":
@@ -1364,18 +1368,26 @@ class HardwareAgent:
                     "python_version": platform.python_version(),
                     "platform": platform.system().lower(),
                 }
+                
+                # Kameras aus BoardRegistry holen (dedupliziert)
+                cameras = []
+                for path, info in self.board_registry.get_all_boards().items():
+                    if info.get("type") == "camera":
+                        cameras.append({
+                            "device": path,
+                            "name": info.get("board_name") or info.get("description") or "Webcam",
+                            "stream_url": f"http://localhost:8000/stream/{path.replace('/dev/', '')}"
+                        })
+                
                 logs_batch = self._drain_log_buffer()
                 success = self.laravel.send_heartbeat(
                     last_state,
                     self.device_info,
                     logs_batch if logs_batch else None,
+                    cameras if cameras else None,
                 )
-                # Webcam-Publish nur bei gesundem Netzwerk versuchen
-                if success and self._hb_failures < 2:
-                    try:
-                        self._maybe_publish_webcams()
-                    except Exception as exc:
-                        logger.warning(f"Webcam-Publish übersprungen: {exc}")
+                # NOTE: Auto-Webcam-Publish entfernt - Kameras werden on-demand
+                # über /cameras Endpoint der Local API geliefert
                 
                 if success:
                     self._hb_failures = 0
@@ -1407,39 +1419,8 @@ class HardwareAgent:
             except Exception:
                 time.sleep(30)
 
-    def _maybe_publish_webcams(self):
-        """Publisht Webcam-Endpunkte nur bei Änderungen oder alle 5 Minuten."""
-        # Snapshot aus Board-Registry (Kameras werden dort geführt)
-        boards = self.board_registry.get_all_boards()
-        cameras = []
-        for path, info in boards.items():
-            if info.get("type") == "camera":
-                cameras.append({
-                    "device": path,
-                    "name": info.get("board_name") or info.get("description") or "Webcam",
-                })
-
-        # Hash bilden
-        snap = json.dumps(sorted(cameras, key=lambda x: x.get("device")), sort_keys=True)
-        snap_hash = str(hash(snap))
-
-        now = time.time()
-        force = False
-        if not hasattr(self, "_last_cam_publish_ts"):
-            self._last_cam_publish_ts = 0
-        if now - getattr(self, "_last_cam_publish_ts", 0) > 300:
-            force = True
-
-        if snap_hash == self._last_cam_hash and not force:
-            return
-
-        # Publish ausführen
-        ok = self._cam_publisher.publish(cameras, self._cam_builder)
-        if ok:
-            self._last_cam_hash = snap_hash
-            self._last_cam_publish_ts = now
-        else:
-            logger.warning("Webcam-Webhooks konnten nicht gesendet werden")
+    # NOTE: _maybe_publish_webcams entfernt - Kameras werden on-demand
+    # über /cameras und /stream/{device} der Local API geliefert
 
     def _is_camera_module_up(self) -> bool:
         """Prüft, ob der MJPEG-Server bereits läuft."""
@@ -1520,17 +1501,35 @@ class HardwareAgent:
         logger.info("Agent gestoppt")
 
 def _install_log_handler(buffer: deque):
+    """
+    Installiert Log-Handler der in Agent-Buffer und Local API Buffer schreibt.
+    """
+    # Versuche Local API Log-Buffer zu importieren für Pull-basierte Logs
+    try:
+        from local_api import log_buffer as local_api_log_buffer
+    except ImportError:
+        local_api_log_buffer = None
+    
     class BufferingHandler(logging.Handler):
         def emit(self, record: logging.LogRecord):
             try:
-                buffer.append({
+                log_entry = {
                     "level": record.levelname.lower(),
                     "message": self.format(record),
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "context": {
                         "logger": record.name,
                     }
-                })
+                }
+                # Agent-Buffer (für Push an Laravel)
+                buffer.append(log_entry)
+                # Local API Buffer (für Pull-Endpoint)
+                if local_api_log_buffer:
+                    local_api_log_buffer.add(
+                        log_entry["level"],
+                        log_entry["message"],
+                        log_entry["context"]
+                    )
             except Exception:
                 pass
     handler = BufferingHandler()
