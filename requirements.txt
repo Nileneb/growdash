@@ -7,3 +7,5 @@ uvicorn==0.24.0
 numpy<2.0.0
 opencv-python-headless==4.8.1.78
 psutil>=5.9.0
+
+websocket-client>=1.6.0

@@ -18,6 +18,10 @@ from contextlib import contextmanager
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
 from queue import Queue
+
+# WebSocket-Client für Laravel Reverb
+import websocket
+import threading
 from pathlib import Path
 import threading
 
@@ -883,6 +887,74 @@ class FirmwareManager:
 
 
 class HardwareAgent:
+    def start_websocket_videostream(self, device_path: str):
+        """Startet den WebSocket-Videostream für eine Kamera."""
+        from camera_module import VideoStreamManager
+        ws_url = self._get_video_websocket_url()
+        vsm = VideoStreamManager()
+        logger.info(f"Starte WebSocket-Videostream für {device_path} → {ws_url}")
+        vsm.stream_via_websocket(
+            device_path=device_path,
+            ws_url=ws_url,
+            device_id=self.config.device_public_id,
+            device_token=self.config.device_token
+        )
+
+    def _get_video_websocket_url(self):
+        # Annahme: Laravel Reverb/WS-Server akzeptiert Video-Frames auf speziellem Pfad
+        base = self.config.laravel_base_url.replace("https://", "wss://").replace("http://", "ws://")
+        return f"{base}/ws/video/{self.config.device_public_id}?X-Device-ID={self.config.device_public_id}&X-Device-Token={self.config.device_token}"
+
+    def websocket_command_loop(self):
+        """WebSocket-Loop für Laravel Reverb (empfohlen)."""
+        ws_url = self._get_websocket_url()
+        logger.info(f"Verbinde WebSocket: {ws_url}")
+        def on_message(ws, message):
+            try:
+                data = json.loads(message)
+                if data.get("event") == "command":
+                    cmd = data.get("data")
+                    cmd_id = cmd.get("id")
+                    cmd_type = cmd.get("type")
+                    logger.info(f"[WS] Führe Befehl aus: {cmd_type}")
+                    success, msg = self.execute_command(cmd)
+                    if cmd_id:
+                        self.laravel.report_command_result(cmd_id, success, msg)
+            except Exception as e:
+                logger.error(f"Fehler im WebSocket-Handler: {e}")
+
+        def on_error(ws, error):
+            logger.error(f"WebSocket Fehler: {error}")
+
+        def on_close(ws, close_status_code, close_msg):
+            logger.warning(f"WebSocket Verbindung geschlossen: {close_status_code} {close_msg}")
+
+        def on_open(ws):
+            logger.info("WebSocket Verbindung geöffnet.")
+
+        # Auth-Header als Query-String (Laravel Echo/Reverb Standard)
+        ws = websocket.WebSocketApp(
+            ws_url,
+            on_message=on_message,
+            on_error=on_error,
+            on_close=on_close,
+            on_open=on_open,
+            header=[
+                f"X-Device-ID: {self.config.device_public_id}",
+                f"X-Device-Token: {self.config.device_token}"
+            ]
+        )
+        ws.run_forever()
+
+    def _get_websocket_url(self):
+        # Annahme: Laravel Reverb läuft auf wss://grow.linn.games:443
+        # und verwendet Echo-kompatibles Protokoll
+        base = self.config.laravel_base_url.replace("https://", "wss://").replace("http://", "ws://")
+        # Channel-Name: device.<device_public_id>
+        channel = f"device.{self.config.device_public_id}"
+        # Echo-Format: /app/{public_id}?auth...
+        # Hier: Einfacher Broadcast-Channel
+        return f"{base}/ws/device/{self.config.device_public_id}?X-Device-ID={self.config.device_public_id}&X-Device-Token={self.config.device_token}"
     """
     Hauptklasse des Hardware-Agents.
     Verwaltet Serial-Kommunikation und Befehls-Polling.
@@ -996,6 +1068,14 @@ class HardwareAgent:
         self._startup_health_check()
         # Kamera-Streaming-Server sicherstellen (optional)
         self._ensure_camera_module_running()
+
+        # Starte WebSocket-Videostream für erste gefundene Kamera (Demo/POC)
+        # In Produktion: alle gewünschten Kameras iterieren
+        boards = self.board_registry.get_all_boards()
+        for path, info in boards.items():
+            if info.get("type") == "camera":
+                threading.Thread(target=self.start_websocket_videostream, args=(path,), daemon=True).start()
+                break
     
     def _startup_health_check(self):
         """Startup-Health-Check: Verbindung zu Laravel testen"""
@@ -1471,17 +1551,18 @@ class HardwareAgent:
     
     def run(self):
         """Agent starten (Hauptschleife)"""
-        # Loops in separaten Threads starten
-        command_thread = threading.Thread(target=self.command_loop, daemon=True)
+        # Heartbeat-Thread wie bisher
         heartbeat_thread = threading.Thread(target=self.heartbeat_loop, daemon=True)
-        
-        command_thread.start()
         heartbeat_thread.start()
-        
+
+        # WebSocket-Thread für Commands
+        ws_thread = threading.Thread(target=self.websocket_command_loop, daemon=True)
+        ws_thread.start()
+
         logger.info("Agent läuft... (Strg+C zum Beenden)")
-        logger.info(f"  Befehle: alle {self.config.command_poll_interval}s")
+        logger.info(f"  Commands: via WebSocket")
         logger.info(f"  Heartbeat: alle 30s")
-        
+
         try:
             while not self._stop_event.is_set():
                 time.sleep(1)

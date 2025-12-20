@@ -35,6 +35,8 @@ from urllib.parse import quote_plus
 import cv2
 import requests
 import uvicorn
+import websocket
+import base64
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -107,8 +109,66 @@ class CameraEndpointBuilder:
 
 
 class VideoStreamManager:
-    """Verwaltet Video-Streams mit OpenCV für MJPEG-Streaming über HTTP."""
-    
+    def stream_via_websocket(self, device_path: str, ws_url: str, device_id: str, device_token: str):
+        """Sendet JPEG-Frames als WebSocket-Frames an den Laravel-Server."""
+        cap = self.get_or_create_stream(device_path)
+        if not cap:
+            logger.error(f"Kamera für WebSocket-Stream nicht verfügbar: {device_path}")
+            return
+        lock = self.stream_locks.get(device_path)
+
+        def on_open(ws):
+            logger.info(f"WebSocket-Video-Stream gestartet: {ws_url}")
+
+        def on_error(ws, error):
+            logger.error(f"WebSocket-Video Fehler: {error}")
+
+        def on_close(ws, code, msg):
+            logger.warning(f"WebSocket-Video Verbindung geschlossen: {code} {msg}")
+
+        ws = websocket.WebSocketApp(
+            ws_url,
+            on_open=on_open,
+            on_error=on_error,
+            on_close=on_close,
+            header=[
+                f"X-Device-ID: {device_id}",
+                f"X-Device-Token: {device_token}"
+            ]
+        )
+
+        def send_frames():
+            while True:
+                try:
+                    with lock:
+                        success, frame = cap.read()
+                        if not success:
+                            time.sleep(0.1)
+                            continue
+                        ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                        if not ret:
+                            continue
+                        frame_bytes = buffer.tobytes()
+                        # Base64-encode für JSON-Kompatibilität
+                        frame_b64 = base64.b64encode(frame_bytes).decode('ascii')
+                        payload = json.dumps({
+                            "event": "video_frame",
+                            "device": device_id,
+                            "frame": frame_b64,
+                            "timestamp": time.time()
+                        })
+                        ws.send(payload)
+                    time.sleep(0.066)  # ~15fps
+                except Exception as exc:
+                    logger.error(f"WebSocket-Video Streaming-Fehler: {exc}")
+                    break
+
+        # Starte WebSocket in eigenem Thread
+        thread = threading.Thread(target=ws.run_forever, daemon=True)
+        thread.start()
+        # Starte Frame-Sender
+        send_frames()
+
     def __init__(self):
         self.active_streams: Dict[str, cv2.VideoCapture] = {}
         self.stream_locks: Dict[str, threading.Lock] = {}
